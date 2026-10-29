@@ -2,6 +2,7 @@
 name = "onesrc"
 version = "0.0.0"
 edition = "2021"
+rust-version = "1.89"
 description = "One source for your coding agents' instructions, skills and MCP servers"
 license = "MIT"
 repository = "https://github.com/narinthon-so/onesrc"
@@ -10,3 +11,13 @@ keywords = ["cli", "mcp", "claude-code", "codex", "dotfiles"]
 categories = ["command-line-utilities", "config"]
 
 [dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.7", features = ["derive", "env"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.154", features = ["preserve_order"] }
+toml = "1.1.8"
+
+[dev-dependencies]
+assert_cmd = "2.2.2"
+insta = "1.49.0"
+tempfile = "3.27.0"

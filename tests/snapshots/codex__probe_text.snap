@@ -1,0 +1,23 @@
+---
+source: tests/codex.rs
+expression: "stable(&f, &out)"
+---
+codex — executable: not found, version: unknown
+paths:
+  user_config            {home}/.codex/config.toml  (file)
+  instructions           {home}/.codex/AGENTS.md  (file)
+  instructions_override  {home}/.codex/AGENTS.override.md  (missing)
+  skill_root             {home}/.agents/skills  (dir)
+  skill_root             {home}/.codex/skills  (dir)
+checks:
+  config.parse                       supported   [observed] 5 MCP server(s)
+  instructions.global_file           supported   [documented] AGENTS.md in CODEX_HOME
+  instructions.override              supported   [documented] non-empty AGENTS.override.md wins
+  skills.root.agents                 supported   [documented] ~/.agents/skills
+  skills.root.codex_home             unknown     [-] directory exists; whether Codex discovers skills here is not verified by probe
+  skills.symlink_discovery           supported   [documented] symlinked skill directories
+  mcp.env_vars                       supported   [documented] forward variables by name
+  mcp.bearer_token_env_var           supported   [documented] bearer token from a variable
+  mcp.env_http_headers               supported   [documented] header values from variables
+  mcp.dollar_brace_expansion         unsupported [documented] no general ${VAR} expansion
+  config.runtime_rewrite             unknown     [-] behavioural probe not run (M2)

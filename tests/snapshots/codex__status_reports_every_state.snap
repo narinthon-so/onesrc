@@ -1,0 +1,27 @@
+---
+source: tests/codex.rs
+expression: "stable(&f, &out)"
+---
+codex   instructions in_sync      instructions         {home}/.codex/AGENTS.md
+                                  ↳ copy, identical to source
+codex   skill        missing      absent               {home}/.agents/skills/absent
+codex   skill        in_sync      copied               {home}/.agents/skills/copied
+                                  ↳ directory, identical to source
+codex   skill        conflict     drifted              {home}/.agents/skills/drifted
+                                  ↳ directory, differs from source
+codex   skill        in_sync      linked               {home}/.agents/skills/linked
+                                  ↳ symlink -> {source}/skills/linked
+codex   skill        unmanaged    broken               {home}/.agents/skills/broken
+                                  ↳ dangling symlink -> {home}/gone/elsewhere
+codex   skill        unmanaged    extra                {home}/.codex/skills/extra
+codex   mcp          conflict     drifted              {home}/.codex/config.toml
+                                  ↳ not owned by onesrc and differs in: args
+codex   mcp          in_sync      local-tool           {home}/.codex/config.toml
+codex   mcp          missing      not-installed        {home}/.codex/config.toml
+codex   mcp          in_sync      remote               {home}/.codex/config.toml
+                                  ↳ also has: startup_timeout_sec
+codex   mcp          unknown      renamed-env          {home}/.codex/config.toml
+                                  ↳ env API_KEY = ${OTHER_NAME}: Codex forwards variables by name only (env_vars); use ${API_KEY}, or wait for write-time resolution (M3)
+codex   mcp          unmanaged    handmade             {home}/.codex/config.toml
+codex   mcp          unmanaged    handmade-http        {home}/.codex/config.toml
+14 item(s), 5 need attention

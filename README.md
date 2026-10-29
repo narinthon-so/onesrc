@@ -2,7 +2,9 @@
 
 One source for your coding agents' instructions, skills and MCP servers.
 
-> Status: design stage. Nothing to install yet. See [DESIGN.md](DESIGN.md).
+> Status: M0 in progress — read-only `probe`, `inspect` and `status` work for
+> **Codex**; Claude Code and Antigravity adapters are next. Nothing writes yet.
+> See [DESIGN.md](DESIGN.md).
 
 If you use more than one coding agent (Claude Code, OpenAI Codex CLI,
 Antigravity CLI), you configure the same things once per agent, and the copies
@@ -13,6 +15,20 @@ tells you when an agent's copy no longer matches.
 - **Ownership-safe**: edits only the entries it created; never your hand-added ones.
 - **Dry-run first**: `onesrc plan` shows the change before `onesrc sync` makes it.
 - **Secrets out of git**: the source holds `${VAR}`, values stay local.
+
+## Try it (read-only)
+
+```bash
+cargo install --git https://github.com/narinthon-so/onesrc
+onesrc probe               # where Codex keeps its config, what it supports
+onesrc inspect             # your current setup as suggested onesrc.toml (secrets masked)
+onesrc status --source ~/dotfiles/agents   # drift vs. your source; exit 0 clean, 1 drift
+```
+
+`status` reports each MCP server, skill and instructions file as `in_sync`,
+`missing`, `differs`, `unmanaged`, `conflict`, `shadowed` or `unknown`.
+Output never contains your username (paths print as `{home}/…`) or secret
+values. `--json` gives a versioned report.
 
 ## Docs
 - [DESIGN.md](DESIGN.md): problem, architecture, commands, milestones
