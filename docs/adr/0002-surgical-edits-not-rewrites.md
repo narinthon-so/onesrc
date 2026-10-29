@@ -7,13 +7,21 @@ Agent config files hold far more than onesrc manages (auth state, trust
 lists, UI settings), and agents rewrite them while running.
 
 ## Decision
-- TOML targets: format-preserving edit (`toml_edit`); only owned tables change.
-- JSON targets: parse with key order preserved; only owned keys under the
-  MCP map change; indentation is kept.
+- TOML targets: byte-preserving outside owned tables (`toml_edit`, edited
+  in place). Ownership by table key, not comment markers.
+- JSON targets: semantic preservation only: untouched keys keep values and
+  order; whitespace is re-rendered with the detected indent. Byte-identical
+  output is not promised.
 - Instruction files: `link` mode (symlink) or `block` mode (owned region
   between `<!-- onesrc:start -->` / `<!-- onesrc:end -->`).
-- Every write is compare-and-swap: re-read and compare a hash right before
-  the atomic rename; abort if the file changed.
+- Every write: onesrc lockfile, permissions set before content, fsync,
+  rename, fsync dir. Optimistic conflict detection (re-read and compare just
+  before rename). This is **not** compare-and-swap: a write in the remaining
+  window, or a later overwrite from an agent's cached copy, is possible.
+  `sync` refuses while the agent runs (unless `--allow-running`) and
+  verifies its entries afterwards.
+
+Revised 2026-10-29 after the Codex review (see docs/reviews/).
 
 ## Consequences
 - A file in an unknown shape is refused, not repaired.

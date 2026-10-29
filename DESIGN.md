@@ -47,26 +47,38 @@ onesrc's niche: user-level, all three kinds of config, ownership-safe writes.
   fragments/<agent>.md # agent-only additions
   skills/<name>/SKILL.md
 
-~/.config/onesrc/      # never committed
+~/.config/onesrc/      # never committed; dir mode 700
   secrets.env          # mode 600
-  state.json           # what onesrc owns in each target
-  backups/<timestamp>/
+  state.json           # owned entries + last-applied fingerprints
+  journal/             # in-flight sync transactions
+  backups/<timestamp>/ # mode 600 files, last 10 kept
+  lock                 # serializes onesrc processes
 ```
 
 ```toml
 [mcp.example-stdio]
 command = "node"
-args = ["~/tools/example-mcp/dist/index.js"]
+args = ["{home}/tools/example-mcp/dist/index.js"]
 
 [mcp.example-remote]
 url = "https://example.com/mcp"
-targets = ["codex"]                  # optional: limit to some agents
+headers = { "X-Client" = "onesrc" }
+bearer_token = "${EXAMPLE_TOKEN}"     # env reference, never a literal
+targets = ["codex"]                    # optional: limit to some agents
 
 [mcp.example-secret]
 command = "npx"
 args = ["some-mcp"]
-env = { API_KEY = "${EXAMPLE_API_KEY}" }   # resolved from secrets.env
+env = { API_KEY = "${EXAMPLE_API_KEY}" }
 ```
+
+### Values and substitution
+
+- `${VAR}` means "the environment variable VAR". It is never a shell
+  expansion. How it reaches each agent is the adapter's job (below).
+- `{home}` and `{source}` are the only path substitutions. A literal `~` in
+  `args` is an error: processes do not expand it.
+- `command` is looked up on `PATH` at the agent's launch, as the agent does.
 
 ## Architecture
 
@@ -80,25 +92,41 @@ env = { API_KEY = "${EXAMPLE_API_KEY}" }   # resolved from secrets.env
    ▼              ▼              ▼
 ClaudeAdapter  CodexAdapter   AgyAdapter        ← one trait
    │              │              │
- read current → diff(desired, current, owned) → Plan → apply
-                                     (backup, atomic write, update state)
+ read current → diff(desired, current, state) → Plan → apply
+                         (lock, journal, backup, write, verify, commit state)
 ```
 
 Adapter trait:
 
-- `detect()` — installed? where is its config?
+- `detect()` — installed? version? where is its config?
 - `read()` — current MCP servers, skills, instructions
-- `render(desired)` — native format
-- `apply(plan)` — surgical edit: TOML via a format-preserving editor
-  (comments survive), JSON touching only owned `mcpServers` keys
+- `render(desired)` — native format, including field translation (below)
+- `apply(plan)` — edit only owned entries (see "Preservation")
 - `skill_strategy()` — symlink or copy, per agent
-- `capabilities()` — probed facts: env-reference syntax, remote server
-  fields (`url`, headers), disabled flag, instruction file location
+- `capabilities()` — probed facts (see "Probes")
 
-Exact target paths per agent are **facts to probe**, not design decisions.
-An agent's own description of its paths is not a probe: during review, one
-agent named config paths for itself that do not exist on disk. A probe is an
-observation, e.g. run the agent's own `mcp add` and see which file changed.
+### Field translation
+
+The source model is agent-neutral; each adapter maps it to native fields and
+refuses what it cannot express. Example, Codex (from its docs; to be
+confirmed by probe): `env` with `${VAR}` values → `env_vars = ["VAR"]`
+(forward by name), `bearer_token` → `bearer_token_env_var`, header values
+with `${VAR}` → `env_http_headers`, literal headers → `http_headers`.
+Where an agent has no env-reference field, the adapter resolves the value at
+write time and the target is reported as holding a secret.
+
+A value in `secrets.env` does not reach an agent that was launched without
+it. onesrc reports which variables each target needs (`doctor`), and offers
+a shell snippet that exports them; it does not manage the agent's launch.
+
+### Skills
+
+A skill is the **whole directory** (scripts, assets, executable bits,
+agent-specific extras like `agents/openai.yaml`), never just `SKILL.md`.
+Linked skills are **live by design**: editing the source changes every agent
+at once, and an agent editing a linked skill edits the source repo. `status`
+shows the source repo's dirty state so such edits are visible. `plan` and
+`undo` cover creating and removing links, not their contents.
 
 ### Instructions: two modes
 
@@ -110,75 +138,141 @@ observation, e.g. run the agent's own `mcp add` and see which file changed.
 `status` reports a `link` target that an agent has replaced with a regular
 file (save-by-rename breaks symlinks) as drift, never silently re-links it.
 
-### Writing while an agent runs
+### Preservation
 
-Agents rewrite their own config at runtime (state, trust lists, MCP changes
-from their own CLI). Every write therefore:
+What "untouched" means, per format:
 
-1. reads the target and records a hash;
-2. computes the edit;
-3. re-reads and compares the hash right before the atomic rename; if it
-   changed, aborts and asks for a re-run;
-4. warns if the agent's process is running.
+- **TOML**: byte-preserving outside owned tables. The original `toml_edit`
+  document is edited in place, never rebuilt through typed serialization.
+  Ownership is by table key, not by comment markers (an agent rewriting the
+  file may drop comments).
+- **JSON**: semantic preservation. Untouched keys keep their values and
+  order (`preserve_order`, removal by `shift_remove`); whitespace is
+  re-rendered with the file's detected indent. Byte-identical output outside
+  owned keys is **not** promised. Duplicate keys → refuse.
 
-M0's read-only `status` exists partly to confirm the probed facts on real
-machines.
+### Concurrency: what is and isn't guaranteed
+
+Agents rewrite their own config at runtime (trust lists, state, MCP changes
+from their own CLI), sometimes from a copy cached at startup.
+
+Guaranteed:
+
+- Only one onesrc process writes at a time (a stable lockfile, not a lock
+  on the target, which rename replaces).
+- No torn files: temp file beside the target, permissions set **before**
+  content is written, fsync file, rename, fsync directory.
+- **Optimistic conflict detection**: onesrc re-reads the target just before
+  rename and aborts if it changed since planning.
+
+Not guaranteed, and said so in `sync` output:
+
+- A write by an agent in the window between that check and the rename.
+- An agent overwriting onesrc's change later from its cached copy.
+
+Policy: `sync` refuses while the target's agent process is running, unless
+`--allow-running`; afterwards it re-reads and verifies its entries, and
+reports any that did not survive.
+
+### Ownership, transactions, undo
+
+- `state.json` stores, per owned entry, a fingerprint of what onesrc last
+  wrote. An owned entry whose current value differs from its fingerprint was
+  edited by someone else → **conflict**, also on deletion.
+- An unmanaged entry with the same name as a desired one → **conflict**;
+  onesrc never adopts it silently.
+- Each `sync` writes a journal (intent → per-target done → commit). A run
+  interrupted mid-way is detected on the next run, which reports what
+  landed and finishes or rolls back owned changes.
+- `undo` reverses the last sync **entry by entry**, only where the current
+  value still equals the post-sync fingerprint; anything changed since is
+  reported and left alone. Backups exist for manual recovery, not for blind
+  restore.
+
+## Probes
+
+Agent behaviour (paths, env-reference support, instruction precedence) is a
+fact to observe, not a design decision. An agent's own description of itself
+is not evidence: in review, one agent named config paths for itself that do
+not exist on disk.
+
+Two kinds:
+
+- **Passive**: read the real home (file existence, kind, parseability,
+  agent version). Never writes. Allowed in M0.
+- **Behavioural**: run the agent's own commands (e.g. `mcp add`) inside a
+  **disposable fixture home**, with no inherited credentials and no network,
+  and observe which files change. Never against the real home.
+
+Report: versioned JSON (plus a short human rendering). Each check has
+`supported | unsupported | unknown | error` with evidence (fixture id,
+sanitized argv, exit status, changed paths). Missing evidence is `unknown`,
+never `unsupported`. Facts taken from documentation are marked as such,
+separately from observations.
 
 ## Commands
 
 ```
-onesrc inspect    # read-only: what each agent has today, printed as suggested onesrc.toml
-onesrc status     # drift: missing / differs / unmanaged
+onesrc inspect    # read-only: what each agent has today, as suggested onesrc.toml (redacted)
+onesrc probe      # capability report (JSON or text)
+onesrc status     # per agent/path/item: in_sync | missing | differs | unmanaged | conflict | shadowed | unknown
 onesrc plan       # what sync would change
 onesrc sync       # apply (prompts; --yes to skip)
-onesrc doctor     # broken links, literal secrets, unset env vars, missing binaries, bad SKILL.md frontmatter
-onesrc undo       # restore the last backup
+onesrc doctor     # broken links, secrets, unset env vars, missing binaries, bad skill bundles
+onesrc undo       # conditional reverse of the last sync
 ```
 
-`inspect` never writes. Adopting existing config is a human step: copy what
-you want from its output into `onesrc.toml`. An automatic import would need
-three-way conflict resolution, and a no-op round trip is not realistic once
-agents disagree on args, env or wording.
+- `inspect` never writes. Adopting existing config is a human step: copy what
+  you want from its output into `onesrc.toml`.
+- `status` distinguishes **file-level** agreement from **effective**
+  agreement: an entry can be installed and still be shadowed (e.g. Codex
+  `AGENTS.override.md` beats `AGENTS.md`; a project config overrides a user
+  one). It reports `shadowed` where observable and says when it cannot tell.
+- Exit codes: `0` clean, `1` drift or conflict, `2` inspection error.
+  `--json` output is stable and versioned.
 
 ## Safety rules
 
-1. Ownership in `state.json`; hand-added entries are never edited or deleted.
-   State is per machine, because targets are per machine: two machines
-   sharing one source each record what they wrote into their own files.
-   Entries removed from the source are cleaned up from local state.
-2. Every write: backup, compare-and-swap (above), atomic rename keeping file
-   mode.
-3. Secrets: use the agent's native env-reference syntax where its
-   `capabilities()` says one exists; otherwise resolve at write time, keep the
-   target at mode 600, and `doctor` warns that the target holds a literal.
-4. Refuse when unsure: unknown shape, unknown version, unparsable file → stop,
-   don't "fix".
-5. Remote MCP servers carry `url` and optional `headers` (values may be
-   `${VAR}`). OAuth tokens live inside each agent; onesrc never reads or
-   writes them.
+1. Ownership in per-machine `state.json` with fingerprints; hand-added
+   entries are never edited or deleted. Targets are per machine, so state is
+   per machine (ADR 0001).
+2. Writes: lock, journal, backup, atomic replace, verify (above).
+3. **Redaction from M0 on**: env values, header values and anything that
+   looks like a token are masked in stdout, diffs, errors, journals and probe
+   reports. `inspect` output never contains a secret value.
+4. Secrets: env references where the agent supports them; otherwise resolved
+   at write time into a mode-600 target, reported by `doctor` (ADR 0003).
+   `doctor` checks known patterns; it cannot prove a value is not a secret.
+5. Refuse when unsure: unknown shape, unknown version, unparsable file,
+   duplicate keys → stop, don't "fix".
+6. OAuth tokens live inside each agent; onesrc never reads or writes them.
 
 ## Tech
 
-Rust: one static binary for Linux and macOS; `toml_edit` for
-format-preserving TOML; `serde_json` with `preserve_order` for JSON targets
-(the targets have no comments, but key order and indentation must survive so
-diffs stay small).
+Rust, MSRV 1.89 (`std::fs::File::lock`). Self-contained release binaries per
+OS/architecture (Linux x86_64/aarch64, macOS aarch64/x86_64). `toml_edit`
+for TOML, `serde_json` with `preserve_order` for JSON.
 
 ## Testing
 
 - Fixture `$HOME` per agent (synthetic configs, with comments); golden tests
   for render / plan / apply.
 - Idempotence: `sync` twice = second run is a no-op.
-- Race test: target modified between read and write → abort, nothing written.
+- Conflict tests: target changed between plan and write → abort; owned entry
+  hand-edited → conflict; same-name unmanaged entry → conflict.
+- Crash test: interrupt after the first target → next run recovers.
+- Redaction test: secrets in fixture configs never appear in any output.
+- Filesystem edge cases: dangling and foreign symlinks, case-insensitive
+  names (macOS), Unicode-equivalent names.
 - CI on Linux and macOS.
 
 ## Milestones
 
 | M | Deliverable |
 |---|---|
-| M0 | Probes + `inspect` + `status` (read-only); `onesrc.toml` and `state.json` schemas |
-| M1 | Instructions + skills linking; `plan` / `sync` / `undo` |
-| M2 | MCP write for all three agents, with ownership |
-| M3 | Secrets + `doctor` |
-| M4 | Release: README demo, comparison, ADRs, binaries |
+| M0 | Passive probes + `probe`, `inspect`, `status` (read-only, redacted); schemas for `onesrc.toml`, `state.json` and the probe report; fixture-home harness |
+| M1 | Instructions + skills linking; `plan` / `sync` / `undo` with lock, journal and fingerprints |
+| M2 | MCP write for all three agents with field translation; behavioural probes in fixture homes |
+| M3 | `doctor`, secret provisioning snippet |
+| M4 | Release: README demo, comparison, binaries |
 | v2 | Per-project scope, more adapters, gateway mode |

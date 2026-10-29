@@ -10,7 +10,8 @@ git.
 
 ## Decision
 Record owned entries in `~/.config/onesrc/state.json` on each machine, keyed
-by target file and entry. Never in the source repo, never as markers inside
+by target file and entry, each with a fingerprint of the value onesrc last
+wrote. A differing current value is a conflict, not an update. Never in the source repo, never as markers inside
 JSON targets.
 
 ## Consequences
