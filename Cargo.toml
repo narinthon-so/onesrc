@@ -1,0 +1,12 @@
+[package]
+name = "onesrc"
+version = "0.0.0"
+edition = "2021"
+description = "One source for your coding agents' instructions, skills and MCP servers"
+license = "MIT"
+repository = "https://github.com/narinthon-so/onesrc"
+readme = "README.md"
+keywords = ["cli", "mcp", "claude-code", "codex", "dotfiles"]
+categories = ["command-line-utilities", "config"]
+
+[dependencies]
