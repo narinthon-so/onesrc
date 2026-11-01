@@ -1,0 +1,28 @@
+---
+source: tests/claude.rs
+expression: "stable(&f, &out)"
+---
+claude  instructions in_sync      instructions         {home}/.claude/CLAUDE.md
+                                  ↳ symlink -> {source}/AGENTS.md
+claude  skill        missing      absent               {home}/.claude/skills/absent
+claude  skill        in_sync      copied               {home}/.claude/skills/copied
+                                  ↳ directory, identical to source
+claude  skill        conflict     drifted              {home}/.claude/skills/drifted
+                                  ↳ directory, differs from source
+claude  skill        in_sync      linked               {home}/.claude/skills/linked
+                                  ↳ symlink -> {source}/skills/linked
+claude  skill        unmanaged    broken               {home}/.claude/skills/broken
+                                  ↳ dangling symlink -> {home}/gone/elsewhere
+claude  skill        unmanaged    extra                {home}/.claude/skills/extra
+claude  mcp          conflict     drifted              {home}/.claude.json
+                                  ↳ not owned by onesrc and differs in: args
+claude  mcp          in_sync      local-tool           {home}/.claude.json
+claude  mcp          unknown      needs-env            {home}/.claude.json
+                                  ↳ env API_KEY = ${API_KEY}: Claude env var expansion is unverified; wait for write-time resolution (M3)
+claude  mcp          missing      not-installed        {home}/.claude.json
+claude  mcp          in_sync      remote               {home}/.claude.json
+                                  ↳ also has: startup_timeout_sec
+claude  mcp          unmanaged    handmade             {home}/.claude.json
+claude  mcp          unmanaged    handmade-http        {home}/.claude.json
+claude  mcp          unmanaged    handmade-sse         {home}/.claude.json
+15 item(s), 5 need attention

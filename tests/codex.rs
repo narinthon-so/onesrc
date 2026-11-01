@@ -31,11 +31,17 @@ args = ["drifted-mcp", "--old-flag"]
 
 [mcp_servers.handmade]
 command = "handmade-mcp"
-args = ["--api-key=sk-PLANTED0secret0value0123", "ghp_PLANTED0token0value0456"]
+args = [
+    "--api-key=sk-PLANTED0secret0value0123",
+    "ghp_PLANTED0token0value0456",
+    "--token",
+    "PLANTED0two0arg0pw0777",
+    "--token=https://example.com/PLANTED0url0key0val0secret111",
+]
 env = { SERVICE_TOKEN = "sk-PLANTED0secret0value0123" }
 
 [mcp_servers.handmade-http]
-url = "https://api.example.com/mcp?key=PLANTED0query0value0abc0123&mode=1"
+url = "https://ghp_PLANTED0user0token0222:PLANTED0userinfo0pw0999@api.example.com/mcp/ghp_PLANTED0path0token0888?key=PLANTED0query0value0abc0123&mode=1"
 http_headers = { "X-Api-Key" = "PLANTED0header0value0789xyz" }
 enabled = false
 "#,
@@ -120,7 +126,7 @@ fn status_reports_every_state() {
 #[test]
 fn status_json_is_versioned() {
     let f = codex_fixture();
-    let (out, _, code) = f.run(&["status", "--json", "--agent", "codex"]);
+    let (out, _, code) = f.run(&["status", "--agent", "codex", "--json"]);
     assert_eq!(code, 1);
     let v: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert_eq!(v["schema_version"], 1);
@@ -150,7 +156,7 @@ fn probe_text() {
 #[test]
 fn probe_json_contract() {
     let f = codex_fixture();
-    let (out, _, _) = f.run(&["probe", "--json", "--agent", "codex"]);
+    let (out, _, _) = f.run(&["probe", "--agent", "codex", "--json"]);
     let v: serde_json::Value = serde_json::from_str(&out).unwrap();
     let r = &v[0];
     assert_eq!(r["schema_version"], 1);
