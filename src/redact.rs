@@ -25,10 +25,11 @@ pub fn scrub(s: &str) -> String {
         return MASK.to_string();
     }
 
-    // 2. Key=value assignments where the key is a plausible flag or name
+    // 2. Key=value assignments: anything before the first '=', no gating on key shape.
+    // A string with no '=' before any '/' or ':' is treated as a whole value.
     if let Some((k, v)) = s.split_once('=') {
-        if is_plausible_key(k) && !v.is_empty() {
-            if is_secret_key(k) || looks_like_token(v) {
+        if !k.is_empty() && !k.contains('/') && !k.contains(':') && !v.is_empty() {
+            if is_secret_key(k) {
                 return format!("{k}={MASK}");
             }
             return format!("{k}={}", scrub(v));
@@ -154,52 +155,18 @@ fn is_secret_key(k: &str) -> bool {
     SECRET_KEY_WORDS.iter().any(|w| k.contains(w))
 }
 
-fn is_plausible_key(k: &str) -> bool {
-    if k.is_empty() || k.contains('/') {
-        return false;
-    }
-    let flag_body = k.trim_start_matches('-');
-    if flag_body.is_empty() {
-        return false;
-    }
-    // CLI flag: --token, -t, --api-key
-    if k.starts_with('-') {
-        return flag_body
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
-    }
-    // Known secret key word: token, secret, password, key, auth, API_KEY, etc.
-    if is_secret_key(k) {
-        return true;
-    }
-    // Environment variable: uppercase letters, digits, underscores (e.g. SERVICE_URL, PORT)
-    if k.chars()
-        .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
-    {
-        return true;
-    }
-    // Config key: lowercase letters, digits, underscores, dashes (e.g. url, base_dir, my-flag)
-    if k.chars()
-        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
-    {
-        return true;
-    }
-    false
-}
-
 fn looks_like_token(s: &str) -> bool {
-    if TOKEN_PREFIXES.iter().any(|p| s.starts_with(p)) {
-        return true;
-    }
     // Cannot start with a flag dash
     if s.starts_with('-') {
         return false;
     }
-    // Long run of base64/hex-ish characters with both letters and digits.
-    // In base64, '=' is strictly padding at the end.
+    // In base64/tokens, '=' is strictly padding at the end; interior '=' means assignment.
     let trimmed = s.trim_end_matches('=');
     if trimmed.contains('=') {
         return false;
+    }
+    if TOKEN_PREFIXES.iter().any(|p| s.starts_with(p)) {
+        return true;
     }
     s.len() >= 24
         && trimmed
@@ -370,6 +337,91 @@ mod tests {
         assert_eq!(
             scrub("/private/var/folders/n6/x9y8z7w6v5u4t3s2r1q0p9o8n7m6/T/tools/x/index.js"),
             "/private/var/folders/n6/x9y8z7w6v5u4t3s2r1q0p9o8n7m6/T/tools/x/index.js"
+        );
+    }
+
+    #[test]
+    fn table_driven_redaction_cases() {
+        let cases: &[(&str, &str)] = &[
+            // userinfo password
+            (
+                "https://user:hunter2@example.com/mcp",
+                "https://user:***@example.com/mcp",
+            ),
+            // token username
+            (
+                "https://ghp_secrettoken123456789012:pw@example.com/mcp",
+                "https://***@example.com/mcp",
+            ),
+            (
+                "https://ghp_secrettoken123456789012@example.com/mcp",
+                "https://***@example.com/mcp",
+            ),
+            // --token=https://...
+            ("--token=https://example.com/hunter2", "--token=***"),
+            // URL path token
+            (
+                "https://example.com/mcp/ghp_PLANTED0path0token0888",
+                "https://example.com/mcp/***",
+            ),
+            // file:// path intact
+            (
+                "file:///tmp/ghp_project/index.js",
+                "file:///tmp/ghp_project/index.js",
+            ),
+            // long random filesystem segment intact
+            (
+                "/private/var/folders/n6/x9y8z7w6v5u4t3s2r1q0p9o8n7m6/T/tools/x/index.js",
+                "/private/var/folders/n6/x9y8z7w6v5u4t3s2r1q0p9o8n7m6/T/tools/x/index.js",
+            ),
+            // padded standalone token
+            ("Zx9Qw8Er7Ty6Ui5Op4As3Df2==", "***"),
+            ("Zx9Qw8Er7Ty6Ui5Op4As3Df2=", "***"),
+            ("Zx9Qw8Er7Ty6Ui5Op4As3Df2", "***"),
+            // uppercase/mixed-case HTTPS
+            (
+                "HTTPS://user:hunter2@example.com/mcp?key=abc",
+                "HTTPS://user:***@example.com/mcp?key=***",
+            ),
+            (
+                "Http://user:hunter2@example.com/mcp?key=abc",
+                "Http://user:***@example.com/mcp?key=***",
+            ),
+            (
+                "hTTpS://user:hunter2@example.com/mcp",
+                "hTTpS://user:***@example.com/mcp",
+            ),
+            // clientId=<token>
+            ("clientId=Zx9Qw8Er7Ty6Ui5Op4As3Df2", "clientId=***"),
+            // --client.id=<token>
+            ("--client.id=Zx9Qw8Er7Ty6Ui5Op4As3Df2", "--client.id=***"),
+            // ordinary flags unchanged
+            ("-y", "-y"),
+            ("--verbose", "--verbose"),
+            // ordinary paths unchanged
+            (
+                "/opt/tools/example-mcp/dist/index.js",
+                "/opt/tools/example-mcp/dist/index.js",
+            ),
+            (
+                "@modelcontextprotocol/server-filesystem",
+                "@modelcontextprotocol/server-filesystem",
+            ),
+            ("https://example.com/mcp", "https://example.com/mcp"),
+        ];
+
+        for &(input, expected) in cases {
+            assert_eq!(scrub(input), expected, "failed on scrub({input:?})");
+        }
+
+        // --token value two-arg
+        assert_eq!(
+            scrub_args(&["--token".into(), "hunter2".into()]),
+            vec!["--token", "***"]
+        );
+        assert_eq!(
+            scrub_args(&["--api-key".into(), "x".into()]),
+            vec!["--api-key", "***"]
         );
     }
 }
