@@ -1,5 +1,6 @@
 //! One module per agent. Each exposes `probe`, `inspect` and `status`.
 
+pub mod agy;
 pub mod codex;
 mod common;
 
@@ -10,7 +11,7 @@ use crate::report::{ProbeReport, StatusRecord};
 use crate::source::{AgentId, Source};
 
 /// Agents with an adapter so far.
-pub const IMPLEMENTED: &[AgentId] = &[AgentId::Codex];
+pub const IMPLEMENTED: &[AgentId] = &[AgentId::Codex, AgentId::Agy];
 
 fn check(agent: AgentId) -> Result<()> {
     if !IMPLEMENTED.contains(&agent) {
@@ -23,6 +24,7 @@ pub fn probe(ctx: &Ctx, agent: AgentId) -> Result<ProbeReport> {
     check(agent)?;
     Ok(match agent {
         AgentId::Codex => codex::probe(ctx),
+        AgentId::Agy => agy::probe(ctx),
         _ => unreachable!(),
     })
 }
@@ -31,6 +33,7 @@ pub fn inspect(ctx: &Ctx, agent: AgentId) -> Result<String> {
     check(agent)?;
     match agent {
         AgentId::Codex => codex::inspect(ctx),
+        AgentId::Agy => agy::inspect(ctx),
         _ => unreachable!(),
     }
 }
@@ -39,6 +42,7 @@ pub fn status(ctx: &Ctx, agent: AgentId, source: &Source) -> Result<Vec<StatusRe
     check(agent)?;
     match agent {
         AgentId::Codex => codex::status(ctx, source),
+        AgentId::Agy => agy::status(ctx, source),
         _ => unreachable!(),
     }
 }
