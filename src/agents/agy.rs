@@ -4,9 +4,10 @@
 //! help strings; facts marked "observed" were confirmed by running agy.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context as _, Result};
+use serde::de::Deserializer as _;
 
 use super::common;
 use crate::ctx::Ctx;
@@ -23,7 +24,6 @@ struct Paths {
     gemini_dir: PathBuf,
     config: PathBuf,
     instruction_files: Vec<PathBuf>,
-    /// Install root first (documented), then other roots seen in practice.
     skill_roots: Vec<PathBuf>,
 }
 
@@ -36,12 +36,145 @@ fn paths(ctx: &Ctx) -> Paths {
         gemini_dir.join("config/GEMINI.md"),
         gemini_dir.join("config/AGENTS.md"),
     ];
-    let skill_roots = vec![gemini_dir.join("config/skills"), gemini_dir.join("skills")];
+    // Spec root is ~/.gemini/config/skills only.
+    let skill_roots = vec![gemini_dir.join("config/skills")];
     Paths {
         gemini_dir,
         config,
         instruction_files,
         skill_roots,
+    }
+}
+
+/// Check if a path resolves or links to a forbidden credential/internal location.
+fn is_forbidden_target(ctx: &Ctx, path: &Path) -> bool {
+    let target = if let Ok(real) = std::fs::canonicalize(path) {
+        real
+    } else if let Ok(link) = std::fs::read_link(path) {
+        if link.is_relative() {
+            path.parent().unwrap_or(path).join(&link)
+        } else {
+            link
+        }
+    } else {
+        return false;
+    };
+
+    let gemini_dir = ctx.home.join(".gemini");
+    let cli_dir = gemini_dir.join("antigravity-cli");
+    if let Ok(real_cli) = std::fs::canonicalize(&cli_dir) {
+        if target.starts_with(&real_cli) {
+            return true;
+        }
+    } else if target.starts_with(&cli_dir) {
+        return true;
+    }
+
+    for cred_name in [
+        "oauth_creds.json",
+        "google_accounts.json",
+        "gemini-credentials.json",
+    ] {
+        let cred_path = gemini_dir.join(cred_name);
+        if let Ok(real_cred) = std::fs::canonicalize(&cred_path) {
+            if target == real_cred {
+                return true;
+            }
+        } else if target == cred_path {
+            return true;
+        }
+    }
+    false
+}
+
+/// Serde visitor that validates there are no duplicate keys anywhere in JSON.
+struct NoDuplicateKeys;
+
+impl<'de> serde::de::Visitor<'de> for NoDuplicateKeys {
+    type Value = serde_json::Value;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str("any valid JSON value without duplicate keys")
+    }
+
+    fn visit_bool<E>(self, v: bool) -> Result<Self::Value, E> {
+        Ok(serde_json::Value::Bool(v))
+    }
+
+    fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E> {
+        Ok(serde_json::Value::Number(v.into()))
+    }
+
+    fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E> {
+        Ok(serde_json::Value::Number(v.into()))
+    }
+
+    fn visit_f64<E>(self, v: f64) -> Result<Self::Value, E> {
+        Ok(serde_json::Number::from_f64(v)
+            .map(serde_json::Value::Number)
+            .unwrap_or(serde_json::Value::Null))
+    }
+
+    fn visit_str<E>(self, v: &str) -> Result<Self::Value, E> {
+        Ok(serde_json::Value::String(v.to_string()))
+    }
+
+    fn visit_string<E>(self, v: String) -> Result<Self::Value, E> {
+        Ok(serde_json::Value::String(v))
+    }
+
+    fn visit_none<E>(self) -> Result<Self::Value, E> {
+        Ok(serde_json::Value::Null)
+    }
+
+    fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_any(NoDuplicateKeys)
+    }
+
+    fn visit_unit<E>(self) -> Result<Self::Value, E> {
+        Ok(serde_json::Value::Null)
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+    where
+        A: serde::de::SeqAccess<'de>,
+    {
+        let mut vec = Vec::new();
+        while let Some(elem) = seq.next_element_seed(NoDuplicateKeys)? {
+            vec.push(elem);
+        }
+        Ok(serde_json::Value::Array(vec))
+    }
+
+    fn visit_map<M>(self, mut access: M) -> Result<Self::Value, M::Error>
+    where
+        M: serde::de::MapAccess<'de>,
+    {
+        let mut map = serde_json::Map::new();
+        while let Some(key) = access.next_key::<String>()? {
+            if map.contains_key(&key) {
+                return Err(serde::de::Error::custom(format!(
+                    "duplicate key in JSON: {key:?}"
+                )));
+            }
+            let value = access.next_value_seed(NoDuplicateKeys)?;
+            map.insert(key, value);
+        }
+        Ok(serde_json::Value::Object(map))
+    }
+}
+
+impl<'de> serde::de::DeserializeSeed<'de> for NoDuplicateKeys {
+    type Value = serde_json::Value;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_any(NoDuplicateKeys)
     }
 }
 
@@ -60,7 +193,13 @@ struct AgyMcp {
 
 impl AgyMcp {
     fn from_json(name: &str, map: &serde_json::Map<String, serde_json::Value>) -> Result<Self> {
-        let at = |k: &str| format!("mcpServers.{name}.{k}");
+        let at = |k: &str| {
+            if k.is_empty() {
+                format!("mcpServers.{name}")
+            } else {
+                format!("mcpServers.{name}.{k}")
+            }
+        };
         let string = |k: &str| -> Result<Option<String>> {
             match map.get(k) {
                 None => Ok(None),
@@ -102,6 +241,16 @@ impl AgyMcp {
             Some(serde_json::Value::Bool(b)) => *b,
             Some(_) => bail!("{}: expected a boolean", at("disabled")),
         };
+
+        let command = string("command")?;
+        let server_url = string("serverUrl")?;
+        if command.is_none() && server_url.is_none() {
+            bail!("{}: expected command or serverUrl", at(""));
+        }
+        if command.is_some() && server_url.is_some() {
+            bail!("{}: set command or serverUrl, not both", at(""));
+        }
+
         const KNOWN: &[&str] = &["command", "args", "env", "serverUrl", "headers", "disabled"];
         let mut other_keys: Vec<String> = map
             .keys()
@@ -111,10 +260,10 @@ impl AgyMcp {
         other_keys.sort();
 
         Ok(Self {
-            command: string("command")?,
+            command,
             args: strings("args")?,
             env: string_map("env")?,
-            server_url: string("serverUrl")?,
+            server_url,
             headers: string_map("headers")?,
             disabled,
             other_keys,
@@ -187,14 +336,22 @@ impl AgyMcp {
 }
 
 /// `Ok(None)`: no config file. `Err`: unreadable or unexpected shape.
-fn read_mcp(p: &Paths) -> Result<Option<BTreeMap<String, AgyMcp>>> {
+fn read_mcp(ctx: &Ctx, p: &Paths) -> Result<Option<BTreeMap<String, AgyMcp>>> {
+    if is_forbidden_target(ctx, &p.config) {
+        bail!(
+            "refusing to read config symlinked to forbidden path: {}",
+            ctx.show(&p.config)
+        );
+    }
     let text = match std::fs::read_to_string(&p.config) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e).context("reading agy config"),
     };
-    let doc: serde_json::Value =
-        serde_json::from_str(&text).context("parsing agy mcp_config.json")?;
+    let mut de = serde_json::Deserializer::from_str(&text);
+    let doc = de
+        .deserialize_any(NoDuplicateKeys)
+        .context("parsing agy mcp_config.json")?;
     let doc_obj = doc
         .as_object()
         .context("parsing agy mcp_config.json: expected a top-level object")?;
@@ -255,7 +412,7 @@ pub fn probe(ctx: &Ctx) -> ProbeReport {
 
     use CheckResult::*;
     use Evidence::*;
-    let parse = match read_mcp(&p) {
+    let parse = match read_mcp(ctx, &p) {
         Ok(Some(m)) => Check::new(
             "config.parse",
             Supported,
@@ -265,10 +422,13 @@ pub fn probe(ctx: &Ctx) -> ProbeReport {
         Ok(None) => Check::new("config.parse", Unknown, None, "no config file"),
         Err(e) => Check::new("config.parse", Error, Some(Observed), format!("{e:#}")),
     };
-    let gemini_skills_root = match p.skill_roots[1].is_dir() {
-        true => "directory exists; whether agy discovers skills here is not verified by probe",
+
+    let gemini_skills = p.gemini_dir.join("skills");
+    let gemini_skills_detail = match gemini_skills.is_dir() {
+        true => "directory exists; seen in prior art but not used by CLI",
         false => "directory absent",
     };
+
     let existing_instructions: Vec<&PathBuf> = p
         .instruction_files
         .iter()
@@ -300,7 +460,7 @@ pub fn probe(ctx: &Ctx) -> ProbeReport {
             Some(Documented),
             "~/.gemini/config/skills",
         ),
-        Check::new("skills.root.gemini", Unknown, None, gemini_skills_root),
+        Check::new("skills.root.gemini", Unknown, None, gemini_skills_detail),
         Check::new(
             "skills.symlink_discovery",
             Supported,
@@ -321,21 +481,21 @@ pub fn probe(ctx: &Ctx) -> ProbeReport {
         ),
         Check::new(
             "mcp.env",
-            Supported,
-            Some(Documented),
-            "env object in MCP server entry",
+            Unknown,
+            None,
+            "key name in mcpServers unconfirmed (agy accepts --env)",
         ),
         Check::new(
             "mcp.headers",
-            Supported,
-            Some(Documented),
-            "headers object in MCP server entry",
+            Unknown,
+            None,
+            "key name in mcpServers unconfirmed (agy accepts --header)",
         ),
         Check::new(
             "mcp.dollar_brace_expansion",
-            Unsupported,
-            Some(Documented),
-            "no general ${VAR} expansion",
+            Unknown,
+            None,
+            "unconfirmed whether agy expands ${VAR} in values",
         ),
         Check::new(
             "config.runtime_rewrite",
@@ -362,7 +522,7 @@ pub fn probe(ctx: &Ctx) -> ProbeReport {
 pub fn inspect(ctx: &Ctx) -> Result<String> {
     let p = paths(ctx);
     let mut out = format!("# agy: {}\n", ctx.show(&p.config));
-    match read_mcp(&p)? {
+    match read_mcp(ctx, &p)? {
         None => out.push_str("# (no config file)\n"),
         Some(servers) => {
             for (name, m) in &servers {
@@ -371,6 +531,13 @@ pub fn inspect(ctx: &Ctx) -> Result<String> {
         }
     }
     for file in &p.instruction_files {
+        if is_forbidden_target(ctx, file) {
+            out.push_str(&format!(
+                "# instructions: {} (symlink lands in forbidden path; not read)\n",
+                ctx.show(file)
+            ));
+            continue;
+        }
         if let Ok(text) = std::fs::read_to_string(file) {
             out.push_str(&format!(
                 "# instructions: {} ({} lines)\n",
@@ -479,17 +646,34 @@ pub fn status(ctx: &Ctx, source: &Source) -> Result<Vec<StatusRecord>> {
         }
     } else {
         let primary = existing_instructions[0];
-        if let Some(r) = common::instructions_status(ctx, AGENT, source, primary, None)? {
+        if is_forbidden_target(ctx, primary) {
+            out.push(StatusRecord {
+                agent: AGENT,
+                kind: ItemKind::Instructions,
+                item: "instructions".to_string(),
+                path: ctx.show(primary),
+                state: State::Unknown,
+                owned: false,
+                detail: Some("symlink lands in forbidden path; not read".to_string()),
+            });
+        } else if let Some(r) = common::instructions_status(ctx, AGENT, source, primary, None)? {
             out.push(r);
         }
         for extra in &existing_instructions[1..] {
-            let reason = format!(
-                "also present: {}; agy may read multiple instruction files, precedence unconfirmed",
-                ctx.show(primary)
-            );
-            if let Some(r) = common::instructions_status(ctx, AGENT, source, extra, Some(reason))? {
-                out.push(r);
-            }
+            let detail = if is_forbidden_target(ctx, extra) {
+                "symlink lands in forbidden path; not read".to_string()
+            } else {
+                "precedence unconfirmed".to_string()
+            };
+            out.push(StatusRecord {
+                agent: AGENT,
+                kind: ItemKind::Instructions,
+                item: "instructions".to_string(),
+                path: ctx.show(extra),
+                state: State::Unknown,
+                owned: false,
+                detail: Some(detail),
+            });
         }
     }
 
@@ -503,7 +687,7 @@ pub fn status(ctx: &Ctx, source: &Source) -> Result<Vec<StatusRecord>> {
         source,
     )?);
 
-    let current = read_mcp(&p)?;
+    let current = read_mcp(ctx, &p)?;
     let path = ctx.show(&p.config);
     let rec = |item: &str, state, detail: Option<String>| StatusRecord {
         agent: AGENT,

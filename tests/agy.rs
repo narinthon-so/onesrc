@@ -117,6 +117,7 @@ targets = ["claude"]
     }
     write(&s.join("skills/copied/scripts/run.sh"), "echo hi\n");
 
+    // Spec root is ~/.gemini/config/skills
     let agy_skills = h.join(".gemini/config/skills");
     symlink(&s.join("skills/linked"), &agy_skills.join("linked"));
     write(
@@ -130,13 +131,20 @@ targets = ["claude"]
     );
     symlink(&h.join("gone/elsewhere"), &agy_skills.join("broken"));
     write(
-        &h.join(".gemini/skills/extra/SKILL.md"),
+        &agy_skills.join("extra/SKILL.md"),
         "---\nname: extra\n---\n",
     );
     write(
-        &h.join(".gemini/skills/eval-workspace/notes.txt"),
+        &agy_skills.join("eval-workspace/notes.txt"),
         "not a skill\n",
     );
+
+    // Skills outside ~/.gemini/config/skills must not be used by status
+    write(
+        &h.join(".gemini/skills/outside/SKILL.md"),
+        "---\nname: outside\n---\n",
+    );
+
     f
 }
 
@@ -151,6 +159,26 @@ fn status_reports_every_state() {
     assert_eq!(err, "");
     assert_eq!(code, 1, "drift must exit 1");
     assert!(!out.contains("ide-only"), "IDE server must be ignored");
+    assert!(
+        !out.contains("outside"),
+        "skills outside config/skills must not be in status: {out}"
+    );
+
+    // Per-state assertions
+    assert!(out.contains("in_sync"), "missing in_sync: {out}");
+    assert!(out.contains("missing"), "missing missing: {out}");
+    assert!(out.contains("conflict"), "missing conflict: {out}");
+    assert!(out.contains("unmanaged"), "missing unmanaged: {out}");
+    assert!(out.contains("unknown"), "missing unknown: {out}");
+    assert!(
+        out.contains("instructions unknown      instructions         {home}/.gemini/AGENTS.md\n                                  ↳ precedence unconfirmed"),
+        "extra instruction file must be reported as unknown with note: {out}"
+    );
+    assert!(
+        !out.contains("shadowed"),
+        "instruction precedence unconfirmed should not be marked shadowed: {out}"
+    );
+
     insta::assert_snapshot!(stable(&f, &out));
 }
 
@@ -166,6 +194,18 @@ fn status_json_is_versioned() {
         .unwrap()
         .iter()
         .all(|r| r["owned"] == false));
+
+    let states: Vec<&str> = v["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["state"].as_str().unwrap())
+        .collect();
+    assert!(states.contains(&"in_sync"));
+    assert!(states.contains(&"missing"));
+    assert!(states.contains(&"conflict"));
+    assert!(states.contains(&"unmanaged"));
+    assert!(states.contains(&"unknown"));
 }
 
 #[test]
@@ -174,6 +214,10 @@ fn inspect_is_redacted() {
     let (out, err, code) = f.run(&["inspect", "--agent", "agy"]);
     assert_eq!((err.as_str(), code), ("", 0));
     assert!(!out.contains("ide-only"), "IDE server must be ignored");
+    assert!(
+        !out.contains("outside"),
+        "skills outside config/skills must not be inspected"
+    );
     insta::assert_snapshot!(stable(&f, &out));
 }
 
@@ -234,6 +278,20 @@ fn managed_block_counts_as_in_sync() {
 }
 
 #[test]
+fn managed_block_differs() {
+    let f = Fixture::new();
+    write(&f.source.join("AGENTS.md"), "rules from source\n");
+    write(
+        &f.home.join(".gemini/GEMINI.md"),
+        "# user prefix\n<!-- onesrc:start -->\nold rules\n<!-- onesrc:end -->\nuser suffix\n",
+    );
+    let (out, _, code) = f.run(&["status", "--agent", "agy"]);
+    assert_eq!(code, 1);
+    assert!(out.contains("differs"), "{out}");
+    assert!(out.contains("managed block differs from source"), "{out}");
+}
+
+#[test]
 fn ide_config_is_ignored() {
     let f = Fixture::new();
     write(&f.source.join("onesrc.toml"), "");
@@ -252,11 +310,116 @@ fn unexpected_shape_refused() {
     write(&f.source.join("onesrc.toml"), "");
     write(
         &f.home.join(".gemini/config/mcp_config.json"),
-        r#"{"mcpServers": {"x": {"args": "not-an-array"}}}"#,
+        r#"{"mcpServers": {"x": {"command": "echo", "args": "not-an-array"}}}"#,
     );
     let (_, err, code) = f.run(&["status", "--agent", "agy"]);
     assert_eq!(code, 2);
     assert!(err.contains("mcpServers.x.args"), "{err}");
+}
+
+#[test]
+fn entry_without_command_or_server_url_refused() {
+    let f = Fixture::new();
+    write(&f.source.join("onesrc.toml"), "");
+    write(
+        &f.home.join(".gemini/config/mcp_config.json"),
+        r#"{"mcpServers": {"empty-server": {"disabled": false}}}"#,
+    );
+    let (_, err, code) = f.run(&["status", "--agent", "agy"]);
+    assert_eq!(code, 2);
+    assert!(
+        err.contains("mcpServers.empty-server: expected command or serverUrl"),
+        "{err}"
+    );
+}
+
+#[test]
+fn duplicate_server_name_refused() {
+    let f = Fixture::new();
+    write(&f.source.join("onesrc.toml"), "");
+    write(
+        &f.home.join(".gemini/config/mcp_config.json"),
+        r#"{
+  "mcpServers": {
+    "srv": {"command": "echo"},
+    "srv": {"command": "echo2"}
+  }
+}"#,
+    );
+    let (_, err, code) = f.run(&["status", "--agent", "agy"]);
+    assert_eq!(code, 2);
+    assert!(err.contains("duplicate key"), "{err}");
+}
+
+#[test]
+fn duplicate_field_refused() {
+    let f = Fixture::new();
+    write(&f.source.join("onesrc.toml"), "");
+    write(
+        &f.home.join(".gemini/config/mcp_config.json"),
+        r#"{
+  "mcpServers": {
+    "srv": {
+      "command": "echo",
+      "command": "echo2"
+    }
+  }
+}"#,
+    );
+    let (_, err, code) = f.run(&["status", "--agent", "agy"]);
+    assert_eq!(code, 2);
+    assert!(err.contains("duplicate key"), "{err}");
+}
+
+#[test]
+fn config_symlink_to_credential_refused() {
+    let f = Fixture::new();
+    write(&f.source.join("onesrc.toml"), "");
+    write(
+        &f.home.join(".gemini/oauth_creds.json"),
+        r#"{"oauth_token": "sk-PLANTED0secret0value0123"}"#,
+    );
+    symlink(
+        &f.home.join(".gemini/oauth_creds.json"),
+        &f.home.join(".gemini/config/mcp_config.json"),
+    );
+    let (_, err, code) = f.run(&["status", "--agent", "agy"]);
+    assert_eq!(code, 2);
+    assert!(err.contains("forbidden path"), "{err}");
+}
+
+#[test]
+fn config_symlink_to_antigravity_cli_refused() {
+    let f = Fixture::new();
+    write(&f.source.join("onesrc.toml"), "");
+    write(
+        &f.home.join(".gemini/antigravity-cli/state.json"),
+        r#"{"secret": "ghp_PLANTED0token0value0456"}"#,
+    );
+    symlink(
+        &f.home.join(".gemini/antigravity-cli/state.json"),
+        &f.home.join(".gemini/config/mcp_config.json"),
+    );
+    let (_, err, code) = f.run(&["status", "--agent", "agy"]);
+    assert_eq!(code, 2);
+    assert!(err.contains("forbidden path"), "{err}");
+}
+
+#[test]
+fn instruction_symlink_to_credential_refused() {
+    let f = Fixture::new();
+    write(&f.source.join("AGENTS.md"), "rules\n");
+    write(
+        &f.home.join(".gemini/oauth_creds.json"),
+        r#"{"oauth_token": "sk-PLANTED0secret0value0123"}"#,
+    );
+    symlink(
+        &f.home.join(".gemini/oauth_creds.json"),
+        &f.home.join(".gemini/GEMINI.md"),
+    );
+    let (out, _, _) = f.run(&["status", "--agent", "agy"]);
+    assert!(out.contains("forbidden path"), "{out}");
+    assert!(out.contains("unknown"), "{out}");
 }
 
 #[test]

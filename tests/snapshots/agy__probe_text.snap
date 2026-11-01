@@ -10,7 +10,6 @@ paths:
   instructions           {home}/.gemini/config/GEMINI.md  (missing)
   instructions           {home}/.gemini/config/AGENTS.md  (missing)
   skill_root             {home}/.gemini/config/skills  (dir)
-  skill_root             {home}/.gemini/skills  (dir)
   oauth_creds            {home}/.gemini/oauth_creds.json  (file)
   internal_state         {home}/.gemini/antigravity-cli  (dir)
 checks:
@@ -18,11 +17,11 @@ checks:
   instructions.global_file           supported   [documented] GEMINI.md or AGENTS.md in ~/.gemini or ~/.gemini/config
   instructions.precedence            unknown     [-] multiple instruction files present; precedence unconfirmed
   skills.root.config                 supported   [documented] ~/.gemini/config/skills
-  skills.root.gemini                 unknown     [-] directory exists; whether agy discovers skills here is not verified by probe
+  skills.root.gemini                 unknown     [-] directory exists; seen in prior art but not used by CLI
   skills.symlink_discovery           supported   [documented] symlinked skill directories
   mcp.server_url                     supported   [observed] serverUrl field for remote MCP servers
   mcp.disabled                       supported   [observed] disabled boolean field
-  mcp.env                            supported   [documented] env object in MCP server entry
-  mcp.headers                        supported   [documented] headers object in MCP server entry
-  mcp.dollar_brace_expansion         unsupported [documented] no general ${VAR} expansion
+  mcp.env                            unknown     [-] key name in mcpServers unconfirmed (agy accepts --env)
+  mcp.headers                        unknown     [-] key name in mcpServers unconfirmed (agy accepts --header)
+  mcp.dollar_brace_expansion         unknown     [-] unconfirmed whether agy expands ${VAR} in values
   config.runtime_rewrite             unknown     [-] behavioural probe not run (M2)

@@ -4,8 +4,8 @@ expression: "stable(&f, &out)"
 ---
 agy     instructions in_sync      instructions         {home}/.gemini/GEMINI.md
                                   ↳ copy, identical to source
-agy     instructions shadowed     instructions         {home}/.gemini/AGENTS.md
-                                  ↳ copy, identical to source; also present: {home}/.gemini/GEMINI.md; agy may read multiple instruction files, precedence unconfirmed
+agy     instructions unknown      instructions         {home}/.gemini/AGENTS.md
+                                  ↳ precedence unconfirmed
 agy     skill        missing      absent               {home}/.gemini/config/skills/absent
 agy     skill        in_sync      copied               {home}/.gemini/config/skills/copied
                                   ↳ directory, identical to source
@@ -15,7 +15,7 @@ agy     skill        in_sync      linked               {home}/.gemini/config/ski
                                   ↳ symlink -> {source}/skills/linked
 agy     skill        unmanaged    broken               {home}/.gemini/config/skills/broken
                                   ↳ dangling symlink -> {home}/gone/elsewhere
-agy     skill        unmanaged    extra                {home}/.gemini/skills/extra
+agy     skill        unmanaged    extra                {home}/.gemini/config/skills/extra
 agy     mcp          in_sync      disabled-server      {home}/.gemini/config/mcp_config.json
 agy     mcp          conflict     drifted              {home}/.gemini/config/mcp_config.json
                                   ↳ not owned by onesrc and differs in: args
