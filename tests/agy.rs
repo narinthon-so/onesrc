@@ -1,6 +1,6 @@
 mod common;
 
-use common::{symlink, write, Fixture};
+use common::{symlink, write, Fixture, SECRETS};
 
 /// An agy home with every state `status` can report.
 fn agy_fixture() -> Fixture {
@@ -33,14 +33,21 @@ fn agy_fixture() -> Fixture {
     },
     "handmade": {
       "command": "handmade-mcp",
-      "args": ["--api-key=sk-PLANTED0secret0value0123", "ghp_PLANTED0token0value0456"],
+      "args": [
+        "--api-key=sk-PLANTED0secret0value0123",
+        "ghp_PLANTED0token0value0456",
+        "--token",
+        "PLANTED0two0arg0pw0777",
+        "--token=https://example.com/PLANTED0url0key0val0secret111",
+        "postgres://user:pw@host/db"
+      ],
       "env": {
         "SERVICE_TOKEN": "sk-PLANTED0secret0value0123"
       },
       "disabled": false
     },
     "handmade-http": {
-      "serverUrl": "https://api.example.com/mcp?key=PLANTED0query0value0abc0123&mode=1",
+      "serverUrl": "https://ghp_PLANTED0user0token0222:PLANTED0userinfo0pw0999@api.example.com/mcp/ghp_PLANTED0path0token0888?key=PLANTED0query0value0abc0123&mode=1",
       "headers": {
         "X-Api-Key": "PLANTED0header0value0789xyz"
       },
@@ -461,4 +468,53 @@ fn inspect_rewrites_home_paths() {
         out.contains(r#"args = ["{home}/tools/x/index.js"]"#),
         "{out}"
     );
+}
+
+#[test]
+fn inspect_rewrites_home_with_long_random_segment() {
+    let f = Fixture::new();
+    // Simulate macOS-style temp directory path structure with long random segment
+    let custom_home = f
+        .home
+        .join("folders/n6/x9y8z7w6v5u4t3s2r1q0p9o8n7m6/T/home");
+    let script = custom_home.join("tools/x/index.js");
+    write(
+        &custom_home.join(".gemini/config/mcp_config.json"),
+        &format!(
+            r#"{{"mcpServers": {{"x": {{"command": "node", "args": [{:?}]}}}}}}"#,
+            script.to_string_lossy()
+        ),
+    );
+    let mut cmd = f.cmd(&["inspect", "--agent", "agy"]);
+    cmd.env("HOME", &custom_home);
+    let (out, _, _) = f.run_cmd(&mut cmd, &["inspect", "--agent", "agy"]);
+    assert!(
+        out.contains(r#"args = ["{home}/tools/x/index.js"]"#),
+        "{out}"
+    );
+}
+
+#[test]
+fn account_keys_and_secrets_never_leak() {
+    let f = agy_fixture();
+    for subcmd in &[
+        &["probe", "--agent", "agy"][..],
+        &["probe", "--agent", "agy", "--json"],
+        &["inspect", "--agent", "agy"],
+        &["status", "--agent", "agy"],
+        &["status", "--agent", "agy", "--json"],
+    ] {
+        let (out, err, _) = f.run(subcmd);
+        for s in SECRETS {
+            assert!(!out.contains(s), "secret {s} leaked in {subcmd:?}:\n{out}");
+            assert!(
+                !err.contains(s),
+                "secret {s} leaked in stderr of {subcmd:?}:\n{err}"
+            );
+        }
+        assert!(
+            !out.contains("oauth_token"),
+            "oauth_token leaked in {subcmd:?}"
+        );
+    }
 }
