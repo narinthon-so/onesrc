@@ -47,17 +47,26 @@ fn claude_fixture() -> Fixture {
     },
     "handmade": {
       "command": "handmade-mcp",
-      "args": ["--api-key=sk-PLANTED0secret0value0123", "ghp_PLANTED0token0value0456"],
+      "args": [
+        "--api-key=sk-PLANTED0secret0value0123",
+        "ghp_PLANTED0token0value0456",
+        "--token",
+        "PLANTED0two0arg0pw0777"
+      ],
       "env": {
         "SERVICE_TOKEN": "sk-PLANTED0secret0value0123"
       }
     },
     "handmade-http": {
       "type": "http",
-      "url": "https://api.example.com/mcp?key=PLANTED0query0value0abc0123&mode=1",
+      "url": "https://user:PLANTED0userinfo0pw0999@api.example.com/mcp/ghp_PLANTED0path0token0888?key=PLANTED0query0value0abc0123&mode=1",
       "headers": {
         "X-Api-Key": "PLANTED0header0value0789xyz"
       }
+    },
+    "handmade-sse": {
+      "type": "sse",
+      "url": "https://api.example.com/sse"
     }
   }
 }
@@ -225,24 +234,166 @@ fn claude_config_dir_env_is_respected() {
         &f.source.join("onesrc.toml"),
         "[mcp.one]\ncommand = \"one\"\n",
     );
+    write(&f.source.join("AGENTS.md"), "rules\n");
+    write(&f.source.join("skills/my-skill/SKILL.md"), "skill\n");
+
+    // Under alt dir: instructions and skills
+    write(&f.home.join("alt/CLAUDE.md"), "rules\n");
+    write(&f.home.join("alt/skills/my-skill/SKILL.md"), "skill\n");
+
+    // Even if .claude.json exists, MCP status records must be unknown
+    // because location under CLAUDE_CONFIG_DIR is unconfirmed
     write(
         &f.home.join(".claude.json"),
         r#"{"mcpServers": {"one": {"command": "one"}}}"#,
     );
-    write(&f.source.join("AGENTS.md"), "rules\n");
-    write(&f.home.join("alt/CLAUDE.md"), "rules\n");
 
-    let out = f
-        .cmd(&["status", "--agent", "claude"])
-        .env("CLAUDE_CONFIG_DIR", f.home.join("alt"))
-        .output()
-        .unwrap();
-    assert_eq!(
-        out.status.code(),
-        Some(0),
-        "{}",
-        String::from_utf8_lossy(&out.stdout)
+    let mut cmd = f.cmd(&["status", "--agent", "claude"]);
+    cmd.env("CLAUDE_CONFIG_DIR", f.home.join("alt"));
+    let (stdout, _, code) = f.run_cmd(&mut cmd, &["status", "--agent", "claude"]);
+    assert_eq!(code, 1, "{stdout}"); // drift because MCP is unknown
+    assert!(
+        stdout.contains("in_sync      instructions         {home}/alt/CLAUDE.md"),
+        "{stdout}"
     );
+    assert!(
+        stdout.contains("in_sync      my-skill             {home}/alt/skills/my-skill"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("unknown      one                  (unconfirmed)"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("location of .claude.json when CLAUDE_CONFIG_DIR is set is unconfirmed"),
+        "{stdout}"
+    );
+
+    // Probe check: probe must not present the path as fact
+    let mut probe_cmd = f.cmd(&["probe", "--agent", "claude"]);
+    probe_cmd.env("CLAUDE_CONFIG_DIR", f.home.join("alt"));
+    let (probe_out, _, probe_code) = f.run_cmd(&mut probe_cmd, &["probe", "--agent", "claude"]);
+    assert_eq!(probe_code, 0);
+    assert!(
+        probe_out.contains("user_config            (unconfirmed)  (other)"),
+        "{probe_out}"
+    );
+}
+
+#[test]
+fn disabled_server_is_unknown() {
+    let f = Fixture::new();
+    write(
+        &f.source.join("onesrc.toml"),
+        "[mcp.disabled-tool]\ncommand = \"node\"\nenabled = false\n",
+    );
+    write(
+        &f.home.join(".claude.json"),
+        r#"{"mcpServers": {"disabled-tool": {"command": "node"}}}"#,
+    );
+    let (out, _, code) = f.run(&["status", "--agent", "claude"]);
+    assert_eq!(code, 1);
+    assert!(out.contains("unknown"), "{out}");
+    assert!(out.contains("no confirmed disable field"), "{out}");
+}
+
+#[test]
+fn duplicate_keys_in_claude_json_refused() {
+    let f = Fixture::new();
+    write(&f.source.join("onesrc.toml"), "");
+
+    // duplicate mcpServers key
+    write(
+        &f.home.join(".claude.json"),
+        r#"{"mcpServers": {}, "mcpServers": {}}"#,
+    );
+    let (_, err, code) = f.run(&["status", "--agent", "claude"]);
+    assert_eq!(code, 2);
+    assert!(err.contains("duplicate key"), "{err}");
+
+    // duplicate server name inside mcpServers
+    write(
+        &f.home.join(".claude.json"),
+        r#"{"mcpServers": {"srv": {"command": "a"}, "srv": {"command": "b"}}}"#,
+    );
+    let (_, err, code) = f.run(&["status", "--agent", "claude"]);
+    assert_eq!(code, 2);
+    assert!(err.contains("duplicate key"), "{err}");
+
+    // duplicate field inside a server
+    write(
+        &f.home.join(".claude.json"),
+        r#"{"mcpServers": {"srv": {"command": "a", "command": "b"}}}"#,
+    );
+    let (_, err, code) = f.run(&["status", "--agent", "claude"]);
+    assert_eq!(code, 2);
+    assert!(err.contains("duplicate key"), "{err}");
+}
+
+#[test]
+fn inspect_shows_sse_not_as_http() {
+    let f = Fixture::new();
+    write(
+        &f.home.join(".claude.json"),
+        r#"{"mcpServers": {"sse-server": {"type": "sse", "url": "https://example.com/sse"}}}"#,
+    );
+    let (out, _, code) = f.run(&["inspect", "--agent", "claude"]);
+    assert_eq!(code, 0);
+    assert!(out.contains("[mcp.sse-server]"), "{out}");
+    assert!(out.contains(r#"# not modelled: type = "sse""#), "{out}");
+}
+
+#[test]
+fn instructions_differs_when_managed_block_differs() {
+    let f = Fixture::new();
+    write(&f.source.join("AGENTS.md"), "new rules\n");
+    write(
+        &f.home.join(".claude/CLAUDE.md"),
+        "# custom notes\n<!-- onesrc:start -->\nold rules\n<!-- onesrc:end -->\nmore notes\n",
+    );
+    let (out, _, code) = f.run(&["status", "--agent", "claude"]);
+    assert_eq!(code, 1);
+    assert!(out.contains("differs"), "{out}");
+    assert!(out.contains("managed block differs from source"), "{out}");
+}
+
+#[test]
+fn instructions_conflict_when_hand_written_file_differs() {
+    let f = Fixture::new();
+    write(&f.source.join("AGENTS.md"), "desired rules\n");
+    write(
+        &f.home.join(".claude/CLAUDE.md"),
+        "# completely custom rules with no managed block\n",
+    );
+    let (out, _, code) = f.run(&["status", "--agent", "claude"]);
+    assert_eq!(code, 1);
+    assert!(out.contains("conflict"), "{out}");
+    assert!(
+        out.contains("hand-written file without a managed block"),
+        "{out}"
+    );
+}
+
+#[test]
+fn default_run_with_no_agent_flag() {
+    let f = Fixture::new();
+    write(
+        &f.source.join("onesrc.toml"),
+        "[mcp.tool]\ncommand = \"node\"\n",
+    );
+    write(
+        &f.home.join(".claude.json"),
+        r#"{"mcpServers": {"tool": {"command": "node"}}}"#,
+    );
+    write(
+        &f.home.join(".codex/config.toml"),
+        "[mcp_servers.tool]\ncommand = \"node\"\n",
+    );
+
+    let (out, _, code) = f.run(&["status"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("claude"), "{out}");
+    assert!(out.contains("codex"), "{out}");
 }
 
 #[test]

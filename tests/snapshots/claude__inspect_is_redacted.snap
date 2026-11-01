@@ -12,14 +12,18 @@ args = ["drifted-mcp", "--old-flag"]
 
 [mcp.handmade]
 command = "handmade-mcp"
-args = ["--api-key=***", "***"]
+args = ["--api-key=***", "***", "--token", "***"]
 env = { SERVICE_TOKEN = "***" }
 # *** = literal value redacted; move it to secrets.env and reference it as ${VAR}
 
 [mcp.handmade-http]
-url = "https://api.example.com/mcp?key=***&mode=1"
+url = "https://user:***@api.example.com/mcp/***?key=***&mode=1"
 headers = { "X-Api-Key" = "***" }
 # *** = literal value redacted; move it to secrets.env and reference it as ${VAR}
+
+[mcp.handmade-sse]
+url = "https://api.example.com/sse"
+# not modelled: type = "sse"
 
 [mcp.local-tool]
 command = "node"

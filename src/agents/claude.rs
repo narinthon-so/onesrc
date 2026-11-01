@@ -7,7 +7,7 @@ use anyhow::{bail, Context as _, Result};
 
 use super::common;
 use crate::ctx::Ctx;
-use crate::redact::{scrub, MASK};
+use crate::redact::{scrub, scrub_args, MASK};
 use crate::report::{
     AgentInfo, Check, CheckResult, Evidence, ItemKind, PathInfo, PathKind, Platform, ProbeReport,
     State, StatusRecord, SCHEMA_VERSION,
@@ -107,6 +107,11 @@ impl ClaudeMcp {
 
     /// What onesrc would write for a source server, or why it cannot.
     fn render(s: &McpServer) -> Result<Self, String> {
+        if !s.enabled {
+            return Err(
+                "enabled = false: Claude has no confirmed disable field; wait for M3".to_string(),
+            );
+        }
         let mut out = ClaudeMcp::default();
         match &s.transport {
             Transport::Stdio { command, args, env } => {
@@ -119,7 +124,7 @@ impl ClaudeMcp {
                         }
                         Value::EnvRef(var) => {
                             return Err(format!(
-                                "env {k} = ${{{var}}}: Claude does not expand ${{VAR}} in .claude.json; \
+                                "env {k} = ${{{var}}}: Claude env var expansion is unverified; \
                                  wait for write-time resolution (M3)"
                             ));
                         }
@@ -135,7 +140,7 @@ impl ClaudeMcp {
                 out.url = Some(url.clone());
                 if let Some(var) = bearer_token_env {
                     return Err(format!(
-                        "bearer_token = ${{{var}}}: Claude has no bearer token field; \
+                        "bearer_token = ${{{var}}}: bearer token support is unverified in M0; \
                          wait for write-time resolution (M3)"
                     ));
                 }
@@ -146,7 +151,7 @@ impl ClaudeMcp {
                         }
                         Value::EnvRef(var) => {
                             return Err(format!(
-                                "headers {h} = ${{{var}}}: Claude does not expand ${{VAR}}; \
+                                "headers {h} = ${{{var}}}: header variable expansion is unverified in M0; \
                                  wait for write-time resolution (M3)"
                             ));
                         }
@@ -192,7 +197,109 @@ fn type_matches(a: Option<&str>, b: Option<&str>) -> bool {
     norm(a) == norm(b)
 }
 
-/// `Ok(None)`: no config file. `Err`: unreadable or unexpected shape.
+struct ValueNoDuplicates;
+
+impl<'de> serde::de::Visitor<'de> for ValueNoDuplicates {
+    type Value = serde_json::Value;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str("any valid JSON value")
+    }
+
+    fn visit_bool<E>(self, v: bool) -> Result<Self::Value, E> {
+        Ok(serde_json::Value::Bool(v))
+    }
+
+    fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E> {
+        Ok(serde_json::Value::Number(v.into()))
+    }
+
+    fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E> {
+        Ok(serde_json::Value::Number(v.into()))
+    }
+
+    fn visit_f64<E>(self, v: f64) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        serde_json::Number::from_f64(v)
+            .map(serde_json::Value::Number)
+            .ok_or_else(|| serde::de::Error::custom("invalid float"))
+    }
+
+    fn visit_str<E>(self, v: &str) -> Result<Self::Value, E> {
+        Ok(serde_json::Value::String(v.to_owned()))
+    }
+
+    fn visit_string<E>(self, v: String) -> Result<Self::Value, E> {
+        Ok(serde_json::Value::String(v))
+    }
+
+    fn visit_none<E>(self) -> Result<Self::Value, E> {
+        Ok(serde_json::Value::Null)
+    }
+
+    fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_any(self)
+    }
+
+    fn visit_unit<E>(self) -> Result<Self::Value, E> {
+        Ok(serde_json::Value::Null)
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+    where
+        A: serde::de::SeqAccess<'de>,
+    {
+        let mut vec = Vec::new();
+        while let Some(elem) = seq.next_element_seed(ValueNoDuplicatesSeed)? {
+            vec.push(elem);
+        }
+        Ok(serde_json::Value::Array(vec))
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: serde::de::MapAccess<'de>,
+    {
+        let mut m = serde_json::Map::new();
+        while let Some(key) = map.next_key::<String>()? {
+            let value = map.next_value_seed(ValueNoDuplicatesSeed)?;
+            if m.insert(key.clone(), value).is_some() {
+                return Err(serde::de::Error::custom(format!(
+                    "duplicate key {key:?} in JSON"
+                )));
+            }
+        }
+        Ok(serde_json::Value::Object(m))
+    }
+}
+
+struct ValueNoDuplicatesSeed;
+
+impl<'de> serde::de::DeserializeSeed<'de> for ValueNoDuplicatesSeed {
+    type Value = serde_json::Value;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_any(ValueNoDuplicates)
+    }
+}
+
+fn parse_json_no_duplicates(text: &str) -> Result<serde_json::Value> {
+    use serde::de::DeserializeSeed;
+    let mut de = serde_json::Deserializer::from_str(text);
+    let val = ValueNoDuplicatesSeed.deserialize(&mut de)?;
+    de.end()?;
+    Ok(val)
+}
+
+/// `Ok(None)`: no config file. `Err`: unreadable, duplicate keys, or unexpected shape.
 /// Reads only `mcpServers`, completely ignoring any account or session state.
 fn read_mcp(p: &Paths) -> Result<Option<BTreeMap<String, ClaudeMcp>>> {
     let text = match std::fs::read_to_string(&p.config) {
@@ -201,7 +308,7 @@ fn read_mcp(p: &Paths) -> Result<Option<BTreeMap<String, ClaudeMcp>>> {
         Err(e) => return Err(e).context("reading Claude config"),
     };
     let doc: serde_json::Value =
-        serde_json::from_str(&text).context("parsing Claude .claude.json")?;
+        parse_json_no_duplicates(&text).context("parsing Claude .claude.json")?;
     let doc_obj = doc
         .as_object()
         .context("parsing Claude .claude.json: expected a top-level JSON object")?;
@@ -239,23 +346,38 @@ pub fn probe(ctx: &Ctx) -> ProbeReport {
         path: ctx.show(path),
         kind: PathKind::of(ctx, path),
     };
-    let mut paths = vec![
-        path("user_config", &p.config),
-        path("instructions", &p.instructions),
-    ];
+    let user_config_info = if ctx.env("CLAUDE_CONFIG_DIR").is_some() {
+        PathInfo {
+            role: "user_config",
+            path: "(unconfirmed)".to_string(),
+            kind: PathKind::Other,
+        }
+    } else {
+        path("user_config", &p.config)
+    };
+    let mut paths = vec![user_config_info, path("instructions", &p.instructions)];
     paths.extend(p.skill_roots.iter().map(|r| path("skill_root", r)));
 
     use CheckResult::*;
     use Evidence::*;
-    let parse = match read_mcp(&p) {
-        Ok(Some(m)) => Check::new(
+    let parse = if ctx.env("CLAUDE_CONFIG_DIR").is_some() {
+        Check::new(
             "config.parse",
-            Supported,
-            Some(Observed),
-            format!("{} MCP server(s)", m.len()),
-        ),
-        Ok(None) => Check::new("config.parse", Unknown, None, "no config file"),
-        Err(e) => Check::new("config.parse", Error, Some(Observed), format!("{e:#}")),
+            Unknown,
+            None,
+            "where .claude.json lives when CLAUDE_CONFIG_DIR is set is not confirmed",
+        )
+    } else {
+        match read_mcp(&p) {
+            Ok(Some(m)) => Check::new(
+                "config.parse",
+                Supported,
+                Some(Observed),
+                format!("{} MCP server(s)", m.len()),
+            ),
+            Ok(None) => Check::new("config.parse", Unknown, None, "no config file"),
+            Err(e) => Check::new("config.parse", Error, Some(Observed), format!("{e:#}")),
+        }
     };
     let checks = vec![
         parse,
@@ -297,9 +419,9 @@ pub fn probe(ctx: &Ctx) -> ProbeReport {
         ),
         Check::new(
             "mcp.dollar_brace_expansion",
-            Unsupported,
-            Some(Documented),
-            "no general ${VAR} expansion in .claude.json",
+            Unknown,
+            None,
+            "whether Claude expands ${VAR} in .claude.json is unverified",
         ),
         Check::new(
             "config.runtime_rewrite",
@@ -325,15 +447,21 @@ pub fn probe(ctx: &Ctx) -> ProbeReport {
 
 pub fn inspect(ctx: &Ctx) -> Result<String> {
     let p = paths(ctx);
-    let mut out = format!("# claude: {}\n", ctx.show(&p.config));
-    match read_mcp(&p)? {
-        None => out.push_str("# (no config file)\n"),
-        Some(servers) => {
-            for (name, m) in &servers {
-                out.push_str(&inspect_server(ctx, name, m));
+    let mut out = if ctx.env("CLAUDE_CONFIG_DIR").is_some() {
+        "# claude: (unconfirmed when CLAUDE_CONFIG_DIR is set)\n# (no confirmed config file)\n"
+            .to_string()
+    } else {
+        let mut out = format!("# claude: {}\n", ctx.show(&p.config));
+        match read_mcp(&p)? {
+            None => out.push_str("# (no config file)\n"),
+            Some(servers) => {
+                for (name, m) in &servers {
+                    out.push_str(&inspect_server(ctx, name, m));
+                }
             }
         }
-    }
+        out
+    };
     if let Ok(text) = std::fs::read_to_string(&p.instructions) {
         out.push_str(&format!(
             "# instructions: {} ({} lines)\n",
@@ -380,10 +508,9 @@ fn inspect_server(ctx: &Ctx, name: &str, m: &ClaudeMcp) -> String {
         ));
     }
     if !m.args.is_empty() {
-        let args: Vec<String> = m
-            .args
+        let args: Vec<String> = scrub_args(&m.args)
             .iter()
-            .map(|a| q(&ctx.to_source_syntax(&scrub(a))))
+            .map(|a| q(&ctx.to_source_syntax(a)))
             .collect();
         out.push_str(&format!("args = [{}]\n", args.join(", ")));
     }
@@ -405,6 +532,9 @@ fn inspect_server(ctx: &Ctx, name: &str, m: &ClaudeMcp) -> String {
         .collect();
     if !headers.is_empty() {
         out.push_str(&format!("headers = {{ {} }}\n", headers.join(", ")));
+    }
+    if m.r#type.as_deref() == Some("sse") {
+        out.push_str("# not modelled: type = \"sse\"\n");
     }
     if !m.env.is_empty() || !m.headers.is_empty() {
         out.push_str(
@@ -436,6 +566,24 @@ pub fn status(ctx: &Ctx, source: &Source) -> Result<Vec<StatusRecord>> {
         &p.skill_roots,
         source,
     )?);
+
+    if ctx.env("CLAUDE_CONFIG_DIR").is_some() {
+        for s in source.mcp.iter().filter(|s| s.targets(AGENT)) {
+            out.push(StatusRecord {
+                agent: AGENT,
+                kind: ItemKind::Mcp,
+                item: s.name.clone(),
+                path: "(unconfirmed)".to_string(),
+                state: State::Unknown,
+                owned: false,
+                detail: Some(
+                    "location of .claude.json when CLAUDE_CONFIG_DIR is set is unconfirmed (M0)"
+                        .to_string(),
+                ),
+            });
+        }
+        return Ok(out);
+    }
 
     let current = read_mcp(&p)?;
     let path = ctx.show(&p.config);
