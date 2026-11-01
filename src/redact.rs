@@ -59,12 +59,12 @@ pub fn scrub(s: &str) -> String {
             } else {
                 format!("{k}={}", scrub(v))
             }
-        } else if is_http_url(s) {
+        } else if is_scrubbable_url(s) {
             scrub_url(s)
         } else {
             s.to_string()
         }
-    } else if is_http_url(s) {
+    } else if is_scrubbable_url(s) {
         scrub_url(s)
     } else {
         s.to_string()
@@ -75,10 +75,10 @@ pub fn scrub(s: &str) -> String {
 }
 
 fn scrub_header(s: &str) -> Option<String> {
-    if s.contains("://") {
+    let (name, val) = s.split_once(':')?;
+    if val.starts_with("//") {
         return None;
     }
-    let (name, val) = s.split_once(':')?;
     let name_trimmed = name.trim();
     if name_trimmed.is_empty() || name_trimmed.contains('/') || name_trimmed.contains('=') {
         return None;
@@ -115,18 +115,21 @@ pub fn scrub_args(args: &[String]) -> Vec<String> {
     out
 }
 
-fn is_http_url(s: &str) -> bool {
-    if let Some(prefix) = s.get(..7) {
-        if prefix.eq_ignore_ascii_case("http://") {
-            return true;
-        }
+fn is_scrubbable_url(s: &str) -> bool {
+    let Some((scheme, _rest)) = s.split_once("://") else {
+        return false;
+    };
+    if scheme.is_empty() || scheme.eq_ignore_ascii_case("file") {
+        return false;
     }
-    if let Some(prefix) = s.get(..8) {
-        if prefix.eq_ignore_ascii_case("https://") {
-            return true;
-        }
+    let mut chars = scheme.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !first.is_ascii_alphabetic() {
+        return false;
     }
-    false
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '-' || c == '.')
 }
 
 fn scrub_url(s: &str) -> String {
@@ -272,13 +275,39 @@ fn is_secret_key(k: &str) -> bool {
         .any(|c| SECRET_KEY_COMPONENTS.contains(&c.as_str()))
 }
 
-fn is_filesystem_path(s: &str) -> bool {
-    (s.starts_with('/')
+fn is_windows_drive_path(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    if bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && (bytes[2] == b'\\' || bytes[2] == b'/')
+    {
+        return true;
+    }
+    false
+}
+
+fn is_filesystem_path_prefix(s: &str) -> bool {
+    s.starts_with('/')
+        || s.starts_with('~')
+        || s.starts_with("./")
+        || s.starts_with("../")
         || s.starts_with("file://")
         || s.starts_with("{home}")
         || s.starts_with("{source}")
-        || s.starts_with('~'))
-        && !is_http_url(s)
+        || is_windows_drive_path(s)
+}
+
+fn is_run_char(b: u8) -> bool {
+    b.is_ascii_alphanumeric()
+        || b == b'_'
+        || b == b'-'
+        || b == b'+'
+        || b == b'.'
+        || b == b'/'
+        || b == b'~'
+        || b == b'%'
+        || b == b'='
 }
 
 fn backstop_mask(s: &str) -> String {
@@ -331,8 +360,8 @@ fn backstop_mask(s: &str) -> String {
         i += ch.len_utf8();
     }
 
-    // Phase 2: if not a filesystem path, check for long-mixed-class tokens
-    if is_filesystem_path(&out) {
+    // Phase 2: if a URL or a filesystem path, it was already structurally handled
+    if is_scrubbable_url(&out) || is_filesystem_path_prefix(&out) {
         return out;
     }
 
@@ -341,49 +370,33 @@ fn backstop_mask(s: &str) -> String {
     let mut j = 0;
 
     while j < out.len() {
-        if out_bytes[j].is_ascii_alphanumeric()
-            || out_bytes[j] == b'_'
-            || out_bytes[j] == b'-'
-            || out_bytes[j] == b'+'
-            || out_bytes[j] == b'.'
-        {
+        if is_run_char(out_bytes[j]) {
             let start = j;
             let mut end = j;
-            while end < out.len()
-                && (out_bytes[end].is_ascii_alphanumeric()
-                    || out_bytes[end] == b'_'
-                    || out_bytes[end] == b'-'
-                    || out_bytes[end] == b'+'
-                    || out_bytes[end] == b'.')
-            {
+            while end < out.len() && is_run_char(out_bytes[end]) {
                 end += 1;
-            }
-            if end < out.len()
-                && out_bytes[end] == b'='
-                && (end + 1 == out.len()
-                    || out_bytes[end + 1] == b'='
-                    || !out_bytes[end + 1].is_ascii_alphanumeric())
-            {
-                end += 1;
-                if end < out.len()
-                    && out_bytes[end] == b'='
-                    && (end + 1 == out.len() || !out_bytes[end + 1].is_ascii_alphanumeric())
-                {
-                    end += 1;
-                }
             }
             let run = &out[start..end];
+
+            if is_filesystem_path_prefix(run) || run.starts_with('-') {
+                final_out.push_str(run);
+                j = end;
+                continue;
+            }
+
             let trimmed = run.trim_end_matches('=');
             if run.len() >= 24
-                && !trimmed.contains('=')
                 && trimmed.chars().any(|c| c.is_ascii_digit())
                 && trimmed.chars().any(|c| c.is_ascii_alphabetic())
-                && !run.starts_with('-')
             {
                 final_out.push_str(MASK);
                 j = end;
                 continue;
             }
+
+            final_out.push_str(run);
+            j = end;
+            continue;
         }
 
         let ch = out[j..].chars().next().unwrap();
@@ -710,6 +723,32 @@ mod tests {
                 "@modelcontextprotocol/server-filesystem",
             ),
             ("https://example.com/mcp", "https://example.com/mcp"),
+            // Database URIs
+            ("postgres://user:pw@host/db", "postgres://user:***@host/db"),
+            ("redis://:pw@host", "redis://:***@host"),
+            (
+                "DATABASE_URL=postgres://user:pw@host/db",
+                "DATABASE_URL=postgres://user:***@host/db",
+            ),
+            (
+                "mongodb+srv://u:pw@cluster/x?retryWrites=true",
+                "mongodb+srv://u:***@cluster/x?retryWrites=true",
+            ),
+            // Backstop run set with /, ~, %
+            (
+                "https://host/mcp?v=Ab1Cd2Ef3Gh4/Hi5Jk6Lm7No8",
+                "https://host/mcp?v=***",
+            ),
+            (
+                "https://host/mcp?v=Ab1Cd2Ef3Gh4~Hi5Jk6Lm7No8",
+                "https://host/mcp?v=***",
+            ),
+            (
+                "https://host/mcp?v=Ab1Cd2Ef3Gh4%2FHi5Jk6Lm7No8",
+                "https://host/mcp?v=***",
+            ),
+            // Header with URL value
+            ("x-api-key: https://example.com/secret", "x-api-key: ***"),
         ];
 
         for &(input, expected) in cases {
@@ -732,6 +771,20 @@ mod tests {
         assert_eq!(
             scrub_args(&["--api_key".into(), "value".into()]),
             vec!["--api_key", "***"]
+        );
+        assert_eq!(
+            scrub_args(&[
+                "run".into(),
+                "-e".into(),
+                "DATABASE_URL=postgres://user:pw@host/db".into(),
+                "image".into(),
+            ]),
+            vec![
+                "run",
+                "-e",
+                "DATABASE_URL=postgres://user:***@host/db",
+                "image",
+            ]
         );
     }
 }
