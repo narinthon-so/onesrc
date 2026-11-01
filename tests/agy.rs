@@ -372,6 +372,29 @@ fn duplicate_field_refused() {
 }
 
 #[test]
+fn trailing_content_in_mcp_config_refused() {
+    let f = Fixture::new();
+    write(&f.source.join("onesrc.toml"), "");
+    write(
+        &f.home.join(".gemini/config/mcp_config.json"),
+        r#"{"mcpServers": {}} garbage"#,
+    );
+    let (_, err, code) = f.run(&["status", "--agent", "agy"]);
+    assert_eq!(code, 2);
+    assert!(err.contains("trailing"), "{err}");
+
+    let f2 = Fixture::new();
+    write(&f2.source.join("onesrc.toml"), "");
+    write(
+        &f2.home.join(".gemini/config/mcp_config.json"),
+        r#"{"mcpServers": {}} {"mcpServers": {}}"#,
+    );
+    let (_, err2, code2) = f2.run(&["status", "--agent", "agy"]);
+    assert_eq!(code2, 2);
+    assert!(err2.contains("trailing"), "{err2}");
+}
+
+#[test]
 fn config_symlink_to_credential_refused() {
     let f = Fixture::new();
     write(&f.source.join("onesrc.toml"), "");

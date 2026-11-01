@@ -352,6 +352,7 @@ fn read_mcp(ctx: &Ctx, p: &Paths) -> Result<Option<BTreeMap<String, AgyMcp>>> {
     let doc = de
         .deserialize_any(NoDuplicateKeys)
         .context("parsing agy mcp_config.json")?;
+    de.end().context("parsing agy mcp_config.json")?;
     let doc_obj = doc
         .as_object()
         .context("parsing agy mcp_config.json: expected a top-level object")?;
