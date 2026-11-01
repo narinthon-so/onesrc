@@ -32,11 +32,33 @@ bites.
 
 | Tool | Gap for this use case |
 |---|---|
-| amtiYo/agents | Project-centric `.agents/`; global paths per agent not documented |
+| rulesync | Tested 2026-11-01: owns each agent's whole MCP list and instruction file; hand-added servers and text are deleted without warning; Codex TOML comments dropped |
+| amtiYo/agents | Tested: `--global` treats `~` as a project (writes `~/.mcp.json`, `~/AGENTS.md`, `~/.gitignore`); only Codex lands in a user-level path |
+| ToolHive | Tested: rewrites Codex TOML whole (comments lost), writes the Antigravity IDE path not the CLI one, drops skill executable bits. Its vMCP runtime works |
 | eggboy/mcpshare | MCP only; no skills or instructions |
 | spyrae/agentsync | Claude is source only; no skills |
 
 onesrc's niche: user-level, all three kinds of config, ownership-safe writes.
+No tested tool has both correct user-level paths and preservation of
+hand-added entries. Survey and test evidence: `docs/reviews/2026-11-01-claude.md`.
+
+Out of scope after that review: a runtime gateway or provider-neutral actions
+(`email.send`). Agents call CLIs directly; the shared instructions list which
+CLIs are available. For one shared MCP endpoint, point every agent at an
+existing gateway such as ToolHive vMCP; onesrc only writes that entry.
+
+## Agent facts
+
+User-level paths onesrc reads and, from M1, writes. "Observed" = seen on a
+real install or in a fixture-home run; "doc" = the agent's own docs, including
+docs embedded in its binary. Each is still confirmed by `probe`.
+
+| | Claude Code | Codex CLI | Antigravity CLI (`agy`) |
+|---|---|---|---|
+| Config home | `~/.claude` (`CLAUDE_CONFIG_DIR`) | `~/.codex` (`CODEX_HOME`) | `~/.gemini` |
+| MCP | `~/.claude.json` → `mcpServers` (observed). File also holds account state: read only `mcpServers` | `config.toml` → `[mcp_servers.*]` (observed) | `~/.gemini/config/mcp_config.json` → `mcpServers`; HTTP uses `serverUrl`, entries carry `disabled` (observed via `agy mcp add`, agy 1.4.12). `~/.gemini/antigravity/mcp_config.json` is the IDE's, not the CLI's |
+| Instructions | `~/.claude/CLAUDE.md`, may be a symlink, may `@import` | `AGENTS.md`; `AGENTS.override.md` shadows it | `~/.gemini/GEMINI.md` or `~/.gemini/AGENTS.md`, and `~/.gemini/config/` counterparts (doc) |
+| Skills | `~/.claude/skills/<name>/`, entries often symlinks (observed) | `~/.agents/skills/` (observed), `~/.codex/skills/` | `~/.gemini/config/skills/<name>/` (doc, embedded in agy 1.4.12) |
 
 ## Source layout
 
@@ -123,6 +145,8 @@ a shell snippet that exports them; it does not manage the agent's launch.
 
 A skill is the **whole directory** (scripts, assets, executable bits,
 agent-specific extras like `agents/openai.yaml`), never just `SKILL.md`.
+A copy keeps file modes; ToolHive dropped executable bits in the 2026-11-01
+test, which breaks bundled scripts.
 Linked skills are **live by design**: editing the source changes every agent
 at once, and an agent editing a linked skill edits the source repo. `status`
 shows the source repo's dirty state so such edits are visible. `plan` and
@@ -132,8 +156,14 @@ shows the source repo's dirty state so such edits are visible. `plan` and
 
 | Mode | How | Use when |
 |---|---|---|
-| `link` | target is a symlink to the rendered file | target is onesrc-only |
-| `block` | onesrc owns only the text between `<!-- onesrc:start -->` and `<!-- onesrc:end -->` | target already has hand-written content, or the agent may rewrite the file |
+| `block` (default) | onesrc owns only the text between `<!-- onesrc:start -->` and `<!-- onesrc:end -->` | always, unless the target is onesrc-only |
+| `link` | target is a symlink to the rendered file | target is onesrc-only, opt-in |
+
+`block` is the default because every tool tested in the 2026-11-01 review that
+replaced instruction files whole lost the user's text.
+
+The shared `AGENTS.md` carries an **Available CLIs** section (e.g. `gh`,
+`jq`) so every agent knows which tools it can call directly.
 
 `status` reports a `link` target that an agent has replaced with a regular
 file (save-by-rename breaks symlinks) as drift, never silently re-links it.
@@ -275,4 +305,4 @@ for TOML, `serde_json` with `preserve_order` for JSON.
 | M2 | MCP write for all three agents with field translation; behavioural probes in fixture homes |
 | M3 | `doctor`, secret provisioning snippet |
 | M4 | Release: README demo, comparison, binaries |
-| v2 | Per-project scope, more adapters, gateway mode |
+| v2 | Per-project scope, more adapters |
