@@ -14,6 +14,11 @@ pub const SECRETS: &[&str] = &[
     "ghp_PLANTED0token0value0456",
     "PLANTED0header0value0789xyz",
     "PLANTED0query0value0abc0123",
+    "PLANTED0userinfo0pw0999",
+    "ghp_PLANTED0path0token0888",
+    "PLANTED0two0arg0pw0777",
+    "PLANTED0url0key0val0secret111",
+    "ghp_PLANTED0user0token0222",
 ];
 
 pub struct Fixture {
@@ -63,7 +68,13 @@ impl Fixture {
     /// Run and return (stdout, stderr, exit code), with every planted
     /// secret asserted absent.
     pub fn run(&self, args: &[&str]) -> (String, String, i32) {
-        let out = self.cmd(args).output().unwrap();
+        self.run_cmd(&mut self.cmd(args), args)
+    }
+
+    /// Run an already configured command and return (stdout, stderr, exit code),
+    /// asserting planted secrets are absent.
+    pub fn run_cmd(&self, cmd: &mut Command, args: &[&str]) -> (String, String, i32) {
+        let out = cmd.output().unwrap();
         let stdout = String::from_utf8(out.stdout).unwrap();
         let stderr = String::from_utf8(out.stderr).unwrap();
         for s in SECRETS {

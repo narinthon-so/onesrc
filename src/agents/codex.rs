@@ -10,7 +10,7 @@ use anyhow::{bail, Context as _, Result};
 
 use super::common;
 use crate::ctx::Ctx;
-use crate::redact::{scrub, MASK};
+use crate::redact::{scrub, scrub_args, MASK};
 use crate::report::{
     AgentInfo, Check, CheckResult, Evidence, ItemKind, PathInfo, PathKind, Platform, ProbeReport,
     State, StatusRecord, SCHEMA_VERSION,
@@ -396,17 +396,12 @@ fn inspect_server(ctx: &Ctx, name: &str, m: &CodexMcp) -> String {
     };
     let mut out = format!("\n[mcp.{}]\n", key(name));
     if let Some(c) = &m.command {
-        out.push_str(&format!(
-            "command = {}\n",
-            q(&ctx.to_source_syntax(&scrub(c)))
-        ));
+        let rewritten = ctx.to_source_syntax(c);
+        out.push_str(&format!("command = {}\n", q(&scrub(&rewritten))));
     }
     if !m.args.is_empty() {
-        let args: Vec<String> = m
-            .args
-            .iter()
-            .map(|a| q(&ctx.to_source_syntax(&scrub(a))))
-            .collect();
+        let rewritten: Vec<String> = m.args.iter().map(|a| ctx.to_source_syntax(a)).collect();
+        let args: Vec<String> = scrub_args(&rewritten).iter().map(|a| q(a)).collect();
         out.push_str(&format!("args = [{}]\n", args.join(", ")));
     }
     let mut env: Vec<String> = m
