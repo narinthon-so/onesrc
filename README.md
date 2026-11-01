@@ -2,9 +2,9 @@
 
 One source for your coding agents' instructions, skills and MCP servers.
 
-> Status: M0 in progress — read-only `probe`, `inspect` and `status` work for
-> **Codex**; Claude Code and Antigravity adapters are next. Nothing writes yet.
-> See [DESIGN.md](DESIGN.md).
+> Status: M0 done — read-only `probe`, `inspect` and `status` work for
+> **Claude Code, Codex and Antigravity CLI**. Nothing writes yet; `plan` and
+> `sync` arrive in M1. See [DESIGN.md](DESIGN.md).
 
 If you use more than one coding agent (Claude Code, OpenAI Codex CLI,
 Antigravity CLI), you configure the same things once per agent, and the copies
@@ -20,10 +20,14 @@ tells you when an agent's copy no longer matches.
 
 ```bash
 cargo install --git https://github.com/narinthon-so/onesrc
-onesrc probe               # where Codex keeps its config, what it supports
+onesrc probe               # where each agent keeps its config, what it supports
 onesrc inspect             # your current setup as suggested onesrc.toml (secrets masked)
 onesrc status --source ~/dotfiles/agents   # drift vs. your source; exit 0 clean, 1 drift
+onesrc status --agent codex --source ~/dotfiles/agents   # one agent only
 ```
+
+`probe` lists credential files it finds (for example agy's
+`~/.gemini/oauth_creds.json`) by path only; onesrc never reads them.
 
 `status` reports each MCP server, skill and instructions file as `in_sync`,
 `missing`, `differs`, `unmanaged`, `conflict`, `shadowed` or `unknown`.
