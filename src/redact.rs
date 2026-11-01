@@ -20,9 +20,14 @@ const SECRET_KEY_WORDS: &[&str] = &[
 
 /// Mask a command-line argument or URL if it carries something token-like.
 pub fn scrub(s: &str) -> String {
-    // 1. Process key=value assignments first (e.g. --token=https://example.com/hunter2)
+    // 1. Standalone tokens (e.g. ghp_..., or base64 token with '=' padding)
+    if looks_like_token(s) {
+        return MASK.to_string();
+    }
+
+    // 2. Key=value assignments where the key is a plausible flag or name
     if let Some((k, v)) = s.split_once('=') {
-        if !k.contains('/') && !v.is_empty() {
+        if is_plausible_key(k) && !v.is_empty() {
             if is_secret_key(k) || looks_like_token(v) {
                 return format!("{k}={MASK}");
             }
@@ -30,15 +35,11 @@ pub fn scrub(s: &str) -> String {
         }
     }
 
-    // 2. HTTP/HTTPS URLs: scrub userinfo, token path segments, and query string
+    // 3. HTTP/HTTPS URLs (case-insensitive scheme)
     if is_http_url(s) {
         return scrub_url(s);
     }
 
-    // 3. Standalone tokens
-    if looks_like_token(s) {
-        return MASK.to_string();
-    }
     s.to_string()
 }
 
@@ -64,7 +65,17 @@ pub fn scrub_args(args: &[String]) -> Vec<String> {
 }
 
 fn is_http_url(s: &str) -> bool {
-    s.starts_with("http://") || s.starts_with("https://")
+    if let Some(prefix) = s.get(..7) {
+        if prefix.eq_ignore_ascii_case("http://") {
+            return true;
+        }
+    }
+    if let Some(prefix) = s.get(..8) {
+        if prefix.eq_ignore_ascii_case("https://") {
+            return true;
+        }
+    }
+    false
 }
 
 fn scrub_url(s: &str) -> String {
@@ -143,17 +154,60 @@ fn is_secret_key(k: &str) -> bool {
     SECRET_KEY_WORDS.iter().any(|w| k.contains(w))
 }
 
+fn is_plausible_key(k: &str) -> bool {
+    if k.is_empty() || k.contains('/') {
+        return false;
+    }
+    let flag_body = k.trim_start_matches('-');
+    if flag_body.is_empty() {
+        return false;
+    }
+    // CLI flag: --token, -t, --api-key
+    if k.starts_with('-') {
+        return flag_body
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    }
+    // Known secret key word: token, secret, password, key, auth, API_KEY, etc.
+    if is_secret_key(k) {
+        return true;
+    }
+    // Environment variable: uppercase letters, digits, underscores (e.g. SERVICE_URL, PORT)
+    if k.chars()
+        .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+    {
+        return true;
+    }
+    // Config key: lowercase letters, digits, underscores, dashes (e.g. url, base_dir, my-flag)
+    if k.chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+    {
+        return true;
+    }
+    false
+}
+
 fn looks_like_token(s: &str) -> bool {
     if TOKEN_PREFIXES.iter().any(|p| s.starts_with(p)) {
         return true;
     }
-    // long run of base64/hex-ish characters with both letters and digits
+    // Cannot start with a flag dash
+    if s.starts_with('-') {
+        return false;
+    }
+    // Long run of base64/hex-ish characters with both letters and digits.
+    // In base64, '=' is strictly padding at the end.
+    let trimmed = s.trim_end_matches('=');
+    if trimmed.contains('=') {
+        return false;
+    }
     s.len() >= 24
-        && s.chars()
-            .all(|c| c.is_ascii_alphanumeric() || "-_+/=.".contains(c))
-        && s.chars().any(|c| c.is_ascii_digit())
-        && s.chars().any(|c| c.is_ascii_alphabetic())
-        && !s.contains('/')
+        && trimmed
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_+/.".contains(c))
+        && trimmed.chars().any(|c| c.is_ascii_digit())
+        && trimmed.chars().any(|c| c.is_ascii_alphabetic())
+        && !trimmed.contains('/')
 }
 
 #[cfg(test)]
@@ -254,5 +308,68 @@ mod tests {
         );
         assert_eq!(scrub("-y"), "-y");
         assert_eq!(scrub("https://example.com/mcp"), "https://example.com/mcp");
+    }
+
+    #[test]
+    fn padded_base64_token_is_masked() {
+        assert_eq!(scrub("Zx9Qw8Er7Ty6Ui5Op4As3Df2=="), "***");
+        assert_eq!(scrub("Zx9Qw8Er7Ty6Ui5Op4As3Df2="), "***");
+        assert_eq!(scrub("Zx9Qw8Er7Ty6Ui5Op4As3Df2"), "***");
+    }
+
+    #[test]
+    fn uppercase_and_mixed_case_scheme_masked() {
+        assert_eq!(
+            scrub("HTTPS://user:hunter2@example.com/mcp?key=abc"),
+            "HTTPS://user:***@example.com/mcp?key=***"
+        );
+        assert_eq!(
+            scrub("Http://user:hunter2@example.com/mcp?key=abc"),
+            "Http://user:***@example.com/mcp?key=***"
+        );
+        assert_eq!(
+            scrub("hTTpS://user:hunter2@example.com/mcp"),
+            "hTTpS://user:***@example.com/mcp"
+        );
+        assert_eq!(
+            scrub("HTTP://example.com/mcp?token=secret"),
+            "HTTP://example.com/mcp?token=***"
+        );
+    }
+
+    #[test]
+    fn regression_table_of_earlier_cases() {
+        // userinfo password
+        assert_eq!(
+            scrub("https://user:hunter2@example.com/mcp"),
+            "https://user:***@example.com/mcp"
+        );
+        // token username
+        assert_eq!(
+            scrub("https://ghp_secrettoken123456789012:pw@example.com/mcp"),
+            "https://***@example.com/mcp"
+        );
+        // --token value two-arg
+        assert_eq!(
+            scrub_args(&["--token".into(), "hunter2".into()]),
+            vec!["--token", "***"]
+        );
+        // --token=https://...
+        assert_eq!(scrub("--token=https://example.com/hunter2"), "--token=***");
+        // URL path token
+        assert_eq!(
+            scrub("https://example.com/mcp/ghp_PLANTED0path0token0888"),
+            "https://example.com/mcp/***"
+        );
+        // file:// path intact
+        assert_eq!(
+            scrub("file:///tmp/ghp_project/index.js"),
+            "file:///tmp/ghp_project/index.js"
+        );
+        // long random filesystem segment intact
+        assert_eq!(
+            scrub("/private/var/folders/n6/x9y8z7w6v5u4t3s2r1q0p9o8n7m6/T/tools/x/index.js"),
+            "/private/var/folders/n6/x9y8z7w6v5u4t3s2r1q0p9o8n7m6/T/tools/x/index.js"
+        );
     }
 }
