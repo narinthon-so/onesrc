@@ -14,7 +14,7 @@ const TOKEN_PREFIXES: &[&str] = &[
     "AKIA",
     "eyJ",
 ];
-const SECRET_KEY_WORDS: &[&str] = &[
+const SECRET_KEY_COMPONENTS: &[&str] = &[
     "key",
     "token",
     "secret",
@@ -24,33 +24,74 @@ const SECRET_KEY_WORDS: &[&str] = &[
     "auth",
     "apikey",
     "credential",
+    "credentials",
     "bearer",
+];
+
+const SECRET_KEY_COMPOUNDS: &[&str] = &[
+    "apikey",
+    "accesskey",
+    "secretkey",
+    "privatekey",
+    "authtoken",
+    "accesstoken",
+    "clientsecret",
 ];
 
 /// Mask a command-line argument or URL if it carries something token-like.
 pub fn scrub(s: &str) -> String {
-    // 1. Standalone tokens (e.g. ghp_..., or base64 token with '=' padding)
+    // 1. Header-style strings: Authorization: Bearer ..., x-api-key: value
+    if let Some(res) = scrub_header(s) {
+        return res;
+    }
+
+    // 2. Standalone tokens (e.g. ghp_..., or base64 token with '=' padding)
     if looks_like_token(s) {
         return MASK.to_string();
     }
 
-    // 2. Key=value assignments: anything before the first '=', no gating on key shape.
+    // 3. Key=value assignments: anything before the first '=', no gating on key shape.
     // A string with no '=' before any '/' or ':' is treated as a whole value.
-    if let Some((k, v)) = s.split_once('=') {
+    let res = if let Some((k, v)) = s.split_once('=') {
         if !k.contains('/') && !k.contains(':') && !v.is_empty() {
             if is_secret_key(k) {
-                return format!("{k}={MASK}");
+                format!("{k}={MASK}")
+            } else {
+                format!("{k}={}", scrub(v))
             }
-            return format!("{k}={}", scrub(v));
+        } else if is_http_url(s) {
+            scrub_url(s)
+        } else {
+            s.to_string()
         }
-    }
+    } else if is_http_url(s) {
+        scrub_url(s)
+    } else {
+        s.to_string()
+    };
 
-    // 3. HTTP/HTTPS URLs (case-insensitive scheme)
-    if is_http_url(s) {
-        return scrub_url(s);
-    }
+    // 4. Backstop: scan for token substrings
+    backstop_mask(&res)
+}
 
-    s.to_string()
+fn scrub_header(s: &str) -> Option<String> {
+    if s.contains("://") {
+        return None;
+    }
+    let (name, val) = s.split_once(':')?;
+    let name_trimmed = name.trim();
+    if name_trimmed.is_empty() || name_trimmed.contains('/') || name_trimmed.contains('=') {
+        return None;
+    }
+    if !name_trimmed.eq_ignore_ascii_case("authorization") && !is_secret_key(name_trimmed) {
+        return None;
+    }
+    let val_trimmed = val.trim_start();
+    if val_trimmed.starts_with("Bearer ") || val_trimmed.starts_with("bearer ") {
+        Some(format!("{name}: Bearer {MASK}"))
+    } else {
+        Some(format!("{name}: {MASK}"))
+    }
 }
 
 /// Scrub a list of command-line arguments, taking into account two-arg forms
@@ -150,7 +191,23 @@ fn scrub_url(s: &str) -> String {
     }
     if let Some(frag) = frag_opt {
         out.push('#');
-        out.push_str(&scrub(frag));
+        if frag.contains('&') || frag.contains('=') {
+            let pairs: Vec<String> = frag
+                .split('&')
+                .map(|pair| match pair.split_once('=') {
+                    Some((k, _)) if is_secret_key(k) => {
+                        format!("{k}={MASK}")
+                    }
+                    Some((k, v)) => {
+                        format!("{k}={}", scrub(v))
+                    }
+                    None => scrub(pair),
+                })
+                .collect();
+            out.push_str(&pairs.join("&"));
+        } else {
+            out.push_str(&scrub(frag));
+        }
     }
     out
 }
@@ -205,28 +262,136 @@ fn is_secret_key(k: &str) -> bool {
     let k_trimmed = k.trim_start_matches('-');
     let lower = k_trimmed.to_ascii_lowercase();
 
-    // Check components
-    let components = split_key_components(k);
-    if components
-        .iter()
-        .any(|c| SECRET_KEY_WORDS.contains(&c.as_str()))
-    {
+    if SECRET_KEY_COMPOUNDS.contains(&lower.as_str()) {
         return true;
     }
 
-    // Or the whole key ending in one of them (e.g. clientsecret, authtoken, myapikey)
-    SECRET_KEY_WORDS.iter().any(|&w| {
-        if w == "key" {
-            // Avoid false positives like "monkey", "donkey", "turkey", "hockey"
-            lower.ends_with("key")
-                && !lower.ends_with("monkey")
-                && !lower.ends_with("donkey")
-                && !lower.ends_with("turkey")
-                && !lower.ends_with("hockey")
-        } else {
-            lower.ends_with(w)
+    let components = split_key_components(k);
+    components
+        .iter()
+        .any(|c| SECRET_KEY_COMPONENTS.contains(&c.as_str()))
+}
+
+fn is_filesystem_path(s: &str) -> bool {
+    (s.starts_with('/')
+        || s.starts_with("file://")
+        || s.starts_with("{home}")
+        || s.starts_with("{source}")
+        || s.starts_with('~'))
+        && !is_http_url(s)
+}
+
+fn backstop_mask(s: &str) -> String {
+    // Phase 1: replace known-prefix tokens anywhere in the string
+    let mut out = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+
+    while i < s.len() {
+        let mut matched = false;
+        for &prefix in TOKEN_PREFIXES {
+            if s[i..].starts_with(prefix) {
+                let mut end = i + prefix.len();
+                while end < s.len()
+                    && (bytes[end].is_ascii_alphanumeric()
+                        || bytes[end] == b'_'
+                        || bytes[end] == b'-')
+                {
+                    end += 1;
+                }
+                if end < s.len()
+                    && bytes[end] == b'='
+                    && (end + 1 == s.len()
+                        || bytes[end + 1] == b'='
+                        || !bytes[end + 1].is_ascii_alphanumeric())
+                {
+                    end += 1;
+                    if end < s.len()
+                        && bytes[end] == b'='
+                        && (end + 1 == s.len() || !bytes[end + 1].is_ascii_alphanumeric())
+                    {
+                        end += 1;
+                    }
+                }
+                let token = &s[i..end];
+                if token.len() >= 16 {
+                    out.push_str(MASK);
+                    i = end;
+                    matched = true;
+                    break;
+                }
+            }
         }
-    })
+        if matched {
+            continue;
+        }
+
+        let ch = s[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+
+    // Phase 2: if not a filesystem path, check for long-mixed-class tokens
+    if is_filesystem_path(&out) {
+        return out;
+    }
+
+    let mut final_out = String::with_capacity(out.len());
+    let out_bytes = out.as_bytes();
+    let mut j = 0;
+
+    while j < out.len() {
+        if out_bytes[j].is_ascii_alphanumeric()
+            || out_bytes[j] == b'_'
+            || out_bytes[j] == b'-'
+            || out_bytes[j] == b'+'
+            || out_bytes[j] == b'.'
+        {
+            let start = j;
+            let mut end = j;
+            while end < out.len()
+                && (out_bytes[end].is_ascii_alphanumeric()
+                    || out_bytes[end] == b'_'
+                    || out_bytes[end] == b'-'
+                    || out_bytes[end] == b'+'
+                    || out_bytes[end] == b'.')
+            {
+                end += 1;
+            }
+            if end < out.len()
+                && out_bytes[end] == b'='
+                && (end + 1 == out.len()
+                    || out_bytes[end + 1] == b'='
+                    || !out_bytes[end + 1].is_ascii_alphanumeric())
+            {
+                end += 1;
+                if end < out.len()
+                    && out_bytes[end] == b'='
+                    && (end + 1 == out.len() || !out_bytes[end + 1].is_ascii_alphanumeric())
+                {
+                    end += 1;
+                }
+            }
+            let run = &out[start..end];
+            let trimmed = run.trim_end_matches('=');
+            if run.len() >= 24
+                && !trimmed.contains('=')
+                && trimmed.chars().any(|c| c.is_ascii_digit())
+                && trimmed.chars().any(|c| c.is_ascii_alphabetic())
+                && !run.starts_with('-')
+            {
+                final_out.push_str(MASK);
+                j = end;
+                continue;
+            }
+        }
+
+        let ch = out[j..].chars().next().unwrap();
+        final_out.push(ch);
+        j += ch.len_utf8();
+    }
+
+    final_out
 }
 
 fn looks_like_token(s: &str) -> bool {
@@ -495,6 +660,43 @@ mod tests {
             ("clientSecret=secret123", "clientSecret=***"),
             ("API_KEY=secret123", "API_KEY=***"),
             ("x-api-key=secret123", "x-api-key=***"),
+            // A. Backstop token substrings
+            (
+                "https://e.test/#/ghp_PLANTED0secret012345678901234567890",
+                "https://e.test/#/***",
+            ),
+            (
+                "https://e.test/#/route?token=ghp_PLANTED0secret012345678901234567890",
+                "https://e.test/#/route?token=***",
+            ),
+            (
+                "https://e.test/?v=x%3Dghp_PLANTED0secret012345678901234567890",
+                "https://e.test/?v=x%3D***",
+            ),
+            ("/ghp_PLANTED0secret012345678901234567890=x", "/***=x"),
+            ("?ghp_PLANTED0secret012345678901234567890=x", "?***=x"),
+            // B. Header-style strings
+            (
+                "Authorization: Bearer ghp_PLANTED0secret012345678901234567890",
+                "Authorization: Bearer ***",
+            ),
+            (
+                "Authorization: Bearer shortsecret",
+                "Authorization: Bearer ***",
+            ),
+            ("x-api-key: value", "x-api-key: ***"),
+            ("X-Auth-Token: value", "X-Auth-Token: ***"),
+            // C. Over-masking: drop generic 'ends with key' rule
+            ("--hotkey=x", "--hotkey=x"),
+            // D. Fragment pairs
+            (
+                "https://example.com/#access_token=abc&state=xyz",
+                "https://example.com/#access_token=***&state=xyz",
+            ),
+            // Passing probes
+            ("--keyboard-layout us", "--keyboard-layout us"),
+            ("--tokenizer bpe", "--tokenizer bpe"),
+            ("AUTH_HEADER=Bearer abc123secret", "AUTH_HEADER=***"),
             // ordinary flags unchanged
             ("-y", "-y"),
             ("--verbose", "--verbose"),
@@ -526,6 +728,10 @@ mod tests {
         assert_eq!(
             scrub_args(&["--author".into(), "Jane".into(), "--verbose".into()]),
             vec!["--author", "Jane", "--verbose"]
+        );
+        assert_eq!(
+            scrub_args(&["--api_key".into(), "value".into()]),
+            vec!["--api_key", "***"]
         );
     }
 }
