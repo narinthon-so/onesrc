@@ -17,6 +17,8 @@ pub const SECRETS: &[&str] = &[
     "PLANTED0userinfo0pw0999",
     "ghp_PLANTED0path0token0888",
     "PLANTED0two0arg0pw0777",
+    "PLANTED0url0key0val0secret111",
+    "ghp_PLANTED0user0token0222",
 ];
 
 pub struct Fixture {

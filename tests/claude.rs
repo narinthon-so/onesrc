@@ -51,7 +51,8 @@ fn claude_fixture() -> Fixture {
         "--api-key=sk-PLANTED0secret0value0123",
         "ghp_PLANTED0token0value0456",
         "--token",
-        "PLANTED0two0arg0pw0777"
+        "PLANTED0two0arg0pw0777",
+        "--token=https://example.com/PLANTED0url0key0val0secret111"
       ],
       "env": {
         "SERVICE_TOKEN": "sk-PLANTED0secret0value0123"
@@ -59,7 +60,7 @@ fn claude_fixture() -> Fixture {
     },
     "handmade-http": {
       "type": "http",
-      "url": "https://user:PLANTED0userinfo0pw0999@api.example.com/mcp/ghp_PLANTED0path0token0888?key=PLANTED0query0value0abc0123&mode=1",
+      "url": "https://ghp_PLANTED0user0token0222:PLANTED0userinfo0pw0999@api.example.com/mcp/ghp_PLANTED0path0token0888?key=PLANTED0query0value0abc0123&mode=1",
       "headers": {
         "X-Api-Key": "PLANTED0header0value0789xyz"
       }

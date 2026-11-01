@@ -20,18 +20,22 @@ const SECRET_KEY_WORDS: &[&str] = &[
 
 /// Mask a command-line argument or URL if it carries something token-like.
 pub fn scrub(s: &str) -> String {
-    // Full URL with scheme: scrub userinfo, path segments, and query string
-    if s.contains("://") {
-        return scrub_url(s);
-    }
-
-    // --flag=value or KEY=value
+    // 1. Process key=value assignments first (e.g. --token=https://example.com/hunter2)
     if let Some((k, v)) = s.split_once('=') {
-        if !k.contains('/') && !v.is_empty() && (is_secret_key(k) || looks_like_token(v)) {
-            return format!("{k}={MASK}");
+        if !k.contains('/') && !v.is_empty() {
+            if is_secret_key(k) || looks_like_token(v) {
+                return format!("{k}={MASK}");
+            }
+            return format!("{k}={}", scrub(v));
         }
     }
 
+    // 2. HTTP/HTTPS URLs: scrub userinfo, token path segments, and query string
+    if is_http_url(s) {
+        return scrub_url(s);
+    }
+
+    // 3. Standalone tokens
     if looks_like_token(s) {
         return MASK.to_string();
     }
@@ -59,6 +63,10 @@ pub fn scrub_args(args: &[String]) -> Vec<String> {
     out
 }
 
+fn is_http_url(s: &str) -> bool {
+    s.starts_with("http://") || s.starts_with("https://")
+}
+
 fn scrub_url(s: &str) -> String {
     let (base, query_opt) = match s.split_once('?') {
         Some((b, q)) => (b, Some(q)),
@@ -72,10 +80,14 @@ fn scrub_url(s: &str) -> String {
         None => (rest, None),
     };
 
-    // Scrub password/token in userinfo: https://user:password@host/
+    // Scrub password/token in userinfo: https://user:password@host/ or https://token:pw@host/
     let scrubbed_auth = if let Some((userinfo, host)) = authority.split_once('@') {
         let scrubbed_userinfo = if let Some((user, _pw)) = userinfo.split_once(':') {
-            format!("{user}:{MASK}")
+            if looks_like_token(user) || is_secret_key(user) {
+                MASK.to_string()
+            } else {
+                format!("{user}:{MASK}")
+            }
         } else if looks_like_token(userinfo) || is_secret_key(userinfo) {
             MASK.to_string()
         } else {
@@ -157,6 +169,37 @@ mod tests {
             "https://x.dev/mcp?key=***&mode=1"
         );
         assert_eq!(scrub("Zx9Qw8Er7Ty6Ui5Op4As3Df2"), "***");
+    }
+
+    #[test]
+    fn secret_key_with_url_value_is_masked() {
+        assert_eq!(scrub("--token=https://example.com/hunter2"), "--token=***");
+        assert_eq!(
+            scrub("API_KEY=https://api.example.com/secret"),
+            "API_KEY=***"
+        );
+    }
+
+    #[test]
+    fn token_shaped_url_username_is_masked() {
+        assert_eq!(
+            scrub("https://ghp_secrettoken123456789012:pw@example.com/mcp"),
+            "https://***@example.com/mcp"
+        );
+        assert_eq!(
+            scrub("https://ghp_secrettoken123456789012@example.com/mcp"),
+            "https://***@example.com/mcp"
+        );
+        assert_eq!(
+            scrub("https://user:hunter2@example.com/mcp"),
+            "https://user:***@example.com/mcp"
+        );
+    }
+
+    #[test]
+    fn file_url_stays_intact() {
+        let url = "file:///tmp/ghp_project/index.js";
+        assert_eq!(scrub(url), url);
     }
 
     #[test]
