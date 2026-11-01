@@ -419,6 +419,42 @@ fn config_symlink_to_credential_refused() {
 }
 
 #[test]
+fn config_symlink_to_settings_json_refused() {
+    let f = Fixture::new();
+    write(&f.source.join("onesrc.toml"), "");
+    write(
+        &f.home.join(".gemini/settings.json"),
+        r#"{"mcpServers": {"settings-tool": {"command": "st"}}}"#,
+    );
+    symlink(
+        &f.home.join(".gemini/settings.json"),
+        &f.home.join(".gemini/config/mcp_config.json"),
+    );
+    let (out, err, code) = f.run(&["inspect", "--agent", "agy"]);
+    assert_eq!(code, 2);
+    assert!(err.contains("forbidden path"), "{err}");
+    assert!(!out.contains("settings-tool"), "{out}");
+}
+
+#[test]
+fn config_symlink_to_antigravity_mcp_config_refused() {
+    let f = Fixture::new();
+    write(&f.source.join("onesrc.toml"), "");
+    write(
+        &f.home.join(".gemini/antigravity/mcp_config.json"),
+        r#"{"mcpServers": {"ide-tool": {"command": "ide"}}}"#,
+    );
+    symlink(
+        &f.home.join(".gemini/antigravity/mcp_config.json"),
+        &f.home.join(".gemini/config/mcp_config.json"),
+    );
+    let (out, err, code) = f.run(&["inspect", "--agent", "agy"]);
+    assert_eq!(code, 2);
+    assert!(err.contains("forbidden path"), "{err}");
+    assert!(!out.contains("ide-tool"), "{out}");
+}
+
+#[test]
 fn config_symlink_to_antigravity_cli_refused() {
     let f = Fixture::new();
     write(&f.source.join("onesrc.toml"), "");
@@ -517,4 +553,36 @@ fn account_keys_and_secrets_never_leak() {
             "oauth_token leaked in {subcmd:?}"
         );
     }
+}
+
+#[test]
+fn skill_with_symlink_to_credential_refused() {
+    let f = Fixture::new();
+    write(&f.source.join("onesrc.toml"), "");
+    write(
+        &f.source.join("skills/my-skill/SKILL.md"),
+        "---\nname: my-skill\n---\ninstructions\n",
+    );
+    write(&f.source.join("skills/my-skill/extra"), "source extra\n");
+    write(
+        &f.home.join(".gemini/config/skills/my-skill/SKILL.md"),
+        "---\nname: my-skill\n---\ninstructions\n",
+    );
+    write(
+        &f.home.join(".gemini/oauth_creds.json"),
+        r#"{"oauth_token": "sk-PLANTED0secret0value0123"}"#,
+    );
+    symlink(
+        &f.home.join(".gemini/oauth_creds.json"),
+        &f.home.join(".gemini/config/skills/my-skill/extra"),
+    );
+    let (out, _, code) = f.run(&["status", "--agent", "agy"]);
+    assert_eq!(code, 1);
+    assert!(out.contains("unknown"), "{out}");
+    assert!(
+        out.contains("skill links into a forbidden location"),
+        "{out}"
+    );
+    assert!(!out.contains("oauth_token"), "{out}");
+    assert!(!out.contains("sk-PLANTED0secret0value0123"), "{out}");
 }

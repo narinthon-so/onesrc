@@ -3,7 +3,7 @@
 //! Facts marked "documented" come from the agy documentation or embedded
 //! help strings; facts marked "observed" were confirmed by running agy.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context as _, Result};
@@ -74,6 +74,8 @@ fn is_forbidden_target(ctx: &Ctx, path: &Path) -> bool {
         "oauth_creds.json",
         "google_accounts.json",
         "gemini-credentials.json",
+        "settings.json",
+        "antigravity/mcp_config.json",
     ] {
         let cred_path = gemini_dir.join(cred_name);
         if let Ok(real_cred) = std::fs::canonicalize(&cred_path) {
@@ -82,6 +84,49 @@ fn is_forbidden_target(ctx: &Ctx, path: &Path) -> bool {
             }
         } else if target == cred_path {
             return true;
+        }
+    }
+    false
+}
+
+/// Walk a skill tree with symlink_metadata and refuse if any entry's canonical target
+/// is a forbidden path or inside ~/.gemini/antigravity-cli/.
+fn skill_tree_has_forbidden_link(ctx: &Ctx, root: &Path) -> bool {
+    if is_forbidden_target(ctx, root) {
+        return true;
+    }
+    let Ok(meta) = std::fs::symlink_metadata(root) else {
+        return false;
+    };
+    if !meta.is_dir() && !root.is_dir() {
+        return false;
+    }
+
+    let mut stack = vec![root.to_path_buf()];
+    let mut visited = HashSet::new();
+    if let Ok(real) = std::fs::canonicalize(root) {
+        visited.insert(real);
+    }
+
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if is_forbidden_target(ctx, &path) {
+                return true;
+            }
+            let Ok(meta) = std::fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if meta.is_dir() || (meta.is_symlink() && path.is_dir()) {
+                if let Ok(real) = std::fs::canonicalize(&path) {
+                    if visited.insert(real) {
+                        stack.push(path);
+                    }
+                }
+            }
         }
     }
     false
@@ -675,14 +720,35 @@ pub fn status(ctx: &Ctx, source: &Source) -> Result<Vec<StatusRecord>> {
     }
 
     for skill in &source.skills {
+        if let Some(first) = p
+            .skill_roots
+            .iter()
+            .map(|r| r.join(&skill.name))
+            .find(|p| PathKind::of(ctx, p) != PathKind::Missing)
+        {
+            if skill_tree_has_forbidden_link(ctx, &first) {
+                out.push(StatusRecord {
+                    agent: AGENT,
+                    kind: ItemKind::Skill,
+                    item: skill.name.clone(),
+                    path: ctx.show(&first),
+                    state: State::Unknown,
+                    owned: false,
+                    detail: Some("skill links into a forbidden location".to_string()),
+                });
+                continue;
+            }
+        }
         out.push(common::skill_status(ctx, AGENT, skill, &p.skill_roots));
     }
-    out.extend(common::unmanaged_skills(
-        ctx,
-        AGENT,
-        &p.skill_roots,
-        source,
-    )?);
+    for mut rec in common::unmanaged_skills(ctx, AGENT, &p.skill_roots, source)? {
+        let skill_path = p.skill_roots[0].join(&rec.item);
+        if skill_tree_has_forbidden_link(ctx, &skill_path) {
+            rec.state = State::Unknown;
+            rec.detail = Some("skill links into a forbidden location".to_string());
+        }
+        out.push(rec);
+    }
 
     let current = read_mcp(ctx, &p)?;
     let path = ctx.show(&p.config);
