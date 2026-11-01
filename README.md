@@ -34,6 +34,8 @@ values. `--json` gives a versioned report.
 - [DESIGN.md](DESIGN.md): problem, architecture, commands, milestones
 - [docs/adr/](docs/adr/): design decisions
 - [docs/reviews/](docs/reviews/): design reviews and how each point was settled
+- [Product direction discussion](docs/reviews/2026-10-30-product-direction.md): setup decisions, runtime-hub sketch, existing tools, and open review questions
+- [Claude review of the direction](docs/reviews/2026-11-01-claude.md): rechecked tool fit, answers to those questions, and the next validation step
 
 ## License
 MIT
