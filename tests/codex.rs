@@ -261,14 +261,6 @@ fn unexpected_shape_refused() {
 }
 
 #[test]
-fn unimplemented_agent_is_an_error() {
-    let f = Fixture::new();
-    let (_, err, code) = f.run(&["probe", "--agent", "agy"]);
-    assert_eq!(code, 2);
-    assert!(err.contains("not implemented"), "{err}");
-}
-
-#[test]
 fn inspect_rewrites_home_paths() {
     let f = Fixture::new();
     let script = f.home.join("tools/x/index.js");

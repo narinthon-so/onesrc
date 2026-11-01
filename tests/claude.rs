@@ -390,11 +390,16 @@ fn default_run_with_no_agent_flag() {
         &f.home.join(".codex/config.toml"),
         "[mcp_servers.tool]\ncommand = \"node\"\n",
     );
+    write(
+        &f.home.join(".gemini/config/mcp_config.json"),
+        r#"{"mcpServers": {"tool": {"command": "node"}}}"#,
+    );
 
     let (out, _, code) = f.run(&["status"]);
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("claude"), "{out}");
     assert!(out.contains("codex"), "{out}");
+    assert!(out.contains("agy"), "{out}");
 }
 
 #[test]

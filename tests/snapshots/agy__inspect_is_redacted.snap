@@ -1,0 +1,39 @@
+---
+source: tests/agy.rs
+expression: "stable(&f, &out)"
+---
+# onesrc inspect: suggested onesrc.toml. Read-only; secrets shown as ***.
+
+# agy: {home}/.gemini/config/mcp_config.json
+
+[mcp.disabled-server]
+command = "echo"
+args = ["off"]
+enabled = false
+
+[mcp.drifted]
+command = "npx"
+args = ["drifted-mcp", "--old-flag"]
+
+[mcp.handmade]
+command = "handmade-mcp"
+args = ["--api-key=***", "***", "--token", "***", "--token=***", "postgres://user:***@host/db"]
+env = { SERVICE_TOKEN = "***" }
+# *** = literal value redacted; move it to secrets.env and reference it as ${VAR}
+
+[mcp.handmade-http]
+url = "https://***@api.example.com/mcp/***?key=***&mode=1"
+headers = { "X-Api-Key" = "***" }
+enabled = false
+# *** = literal value redacted; move it to secrets.env and reference it as ${VAR}
+
+[mcp.local-tool]
+command = "node"
+args = ["/opt/tools/local-tool/index.js"]
+
+[mcp.remote]
+url = "https://mcp.example.com/mcp"
+# not modelled by onesrc yet: startupTimeoutSec
+# instructions: {home}/.gemini/GEMINI.md (3 lines)
+# instructions: {home}/.gemini/AGENTS.md (3 lines)
+# skills in {home}/.gemini/config/skills: copied, drifted, extra, linked
