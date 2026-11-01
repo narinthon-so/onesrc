@@ -32,30 +32,6 @@ pub fn scrub(s: &str) -> String {
         }
     }
 
-    // Path segments: mask any token-shaped segment (e.g. /mcp/ghp_...)
-    if s.contains('/') {
-        let segments: Vec<String> = s
-            .split('/')
-            .map(|seg| {
-                if looks_like_token(seg) {
-                    MASK.to_string()
-                } else if let Some((k, v)) = seg.split_once('=') {
-                    if is_secret_key(k) || looks_like_token(v) {
-                        format!("{k}={MASK}")
-                    } else {
-                        seg.to_string()
-                    }
-                } else {
-                    seg.to_string()
-                }
-            })
-            .collect();
-        let rejoined = segments.join("/");
-        if rejoined != s {
-            return rejoined;
-        }
-    }
-
     if looks_like_token(s) {
         return MASK.to_string();
     }
@@ -192,12 +168,21 @@ mod tests {
     }
 
     #[test]
-    fn masks_token_path_segment() {
+    fn url_path_token_is_masked() {
         assert_eq!(
             scrub("https://example.com/mcp/ghp_PLANTED0token0value0456"),
             "https://example.com/mcp/***"
         );
-        assert_eq!(scrub("/mcp/ghp_PLANTED0token0value0456"), "/mcp/***");
+        assert_eq!(
+            scrub("https://example.com/mcp/ghp_PLANTED0path0token0888"),
+            "https://example.com/mcp/***"
+        );
+    }
+
+    #[test]
+    fn filesystem_path_with_long_random_segment_stays_intact() {
+        let path = "/private/var/folders/n6/x9y8z7w6v5u4t3s2r1q0p9o8n7m6/T/tools/x/index.js";
+        assert_eq!(scrub(path), path);
     }
 
     #[test]

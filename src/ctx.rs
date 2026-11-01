@@ -38,20 +38,49 @@ impl Ctx {
             if let Ok(rest) = path.strip_prefix(src) {
                 return join_display("{source}", rest);
             }
+            if let Ok(canon_src) = src.canonicalize() {
+                if let Ok(rest) = path.strip_prefix(&canon_src) {
+                    return join_display("{source}", rest);
+                }
+            }
         }
         if let Ok(rest) = path.strip_prefix(&self.home) {
             return join_display("{home}", rest);
+        }
+        if let Ok(canon_home) = self.home.canonicalize() {
+            if let Ok(rest) = path.strip_prefix(&canon_home) {
+                return join_display("{home}", rest);
+            }
         }
         path.display().to_string()
     }
 
     /// Rewrite a leading home path into source syntax (`{home}/…`).
+    /// Matches home in both its given and canonical form (e.g. macOS /var -> /private/var).
     pub fn to_source_syntax(&self, s: &str) -> String {
         let home = self.home.to_string_lossy();
-        match s.strip_prefix(home.as_ref()) {
-            Some(rest) if rest.is_empty() || rest.starts_with('/') => format!("{{home}}{rest}"),
-            _ => s.to_string(),
+        if let Some(rest) = s.strip_prefix(home.as_ref()) {
+            if rest.is_empty() || rest.starts_with('/') {
+                return format!("{{home}}{rest}");
+            }
         }
+        if let Ok(canon) = self.home.canonicalize() {
+            let canon_str = canon.to_string_lossy();
+            if let Some(rest) = s.strip_prefix(canon_str.as_ref()) {
+                if rest.is_empty() || rest.starts_with('/') {
+                    return format!("{{home}}{rest}");
+                }
+            }
+            // On macOS /var is symlinked to /private/var: check non-canonical prefix if home is canonical
+            if let Some(stripped) = canon_str.strip_prefix("/private") {
+                if let Some(rest) = s.strip_prefix(stripped) {
+                    if rest.is_empty() || rest.starts_with('/') {
+                        return format!("{{home}}{rest}");
+                    }
+                }
+            }
+        }
+        s.to_string()
     }
 
     /// Find an executable on this context's `PATH`.

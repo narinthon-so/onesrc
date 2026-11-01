@@ -482,3 +482,27 @@ fn inspect_rewrites_home_paths() {
         "{out}"
     );
 }
+
+#[test]
+fn inspect_rewrites_home_with_long_random_segment() {
+    let f = Fixture::new();
+    // Simulate macOS-style temp directory path structure with long random segment
+    let custom_home = f
+        .home
+        .join("folders/n6/x9y8z7w6v5u4t3s2r1q0p9o8n7m6/T/home");
+    let script = custom_home.join("tools/x/index.js");
+    write(
+        &custom_home.join(".claude.json"),
+        &format!(
+            r#"{{"mcpServers": {{"x": {{"command": "node", "args": [{:?}]}}}}}}"#,
+            script.to_string_lossy()
+        ),
+    );
+    let mut cmd = f.cmd(&["inspect", "--agent", "claude"]);
+    cmd.env("HOME", &custom_home);
+    let (out, _, _) = f.run_cmd(&mut cmd, &["inspect", "--agent", "claude"]);
+    assert!(
+        out.contains(r#"args = ["{home}/tools/x/index.js"]"#),
+        "{out}"
+    );
+}
