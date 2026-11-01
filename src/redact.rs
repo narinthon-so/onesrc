@@ -15,7 +15,16 @@ const TOKEN_PREFIXES: &[&str] = &[
     "eyJ",
 ];
 const SECRET_KEY_WORDS: &[&str] = &[
-    "token", "secret", "password", "passwd", "apikey", "api_key", "key", "auth",
+    "key",
+    "token",
+    "secret",
+    "password",
+    "passwd",
+    "pwd",
+    "auth",
+    "apikey",
+    "credential",
+    "bearer",
 ];
 
 /// Mask a command-line argument or URL if it carries something token-like.
@@ -28,7 +37,7 @@ pub fn scrub(s: &str) -> String {
     // 2. Key=value assignments: anything before the first '=', no gating on key shape.
     // A string with no '=' before any '/' or ':' is treated as a whole value.
     if let Some((k, v)) = s.split_once('=') {
-        if !k.is_empty() && !k.contains('/') && !k.contains(':') && !v.is_empty() {
+        if !k.contains('/') && !k.contains(':') && !v.is_empty() {
             if is_secret_key(k) {
                 return format!("{k}={MASK}");
             }
@@ -80,9 +89,13 @@ fn is_http_url(s: &str) -> bool {
 }
 
 fn scrub_url(s: &str) -> String {
-    let (base, query_opt) = match s.split_once('?') {
-        Some((b, q)) => (b, Some(q)),
+    let (without_frag, frag_opt) = match s.split_once('#') {
+        Some((b, f)) => (b, Some(f)),
         None => (s, None),
+    };
+    let (base, query_opt) = match without_frag.split_once('?') {
+        Some((b, q)) => (b, Some(q)),
+        None => (without_frag, None),
     };
     let Some((scheme, rest)) = base.split_once("://") else {
         return s.to_string();
@@ -110,25 +123,10 @@ fn scrub_url(s: &str) -> String {
         authority.to_string()
     };
 
-    // Scrub token-shaped URL path segments: /mcp/ghp_...
+    // Scrub URL path segments recursively: /mcp/ghp_... or /a=b=ghp_...
     let scrubbed_path = path_opt
         .map(|p| {
-            let segments: Vec<String> = p
-                .split('/')
-                .map(|seg| {
-                    if looks_like_token(seg) {
-                        MASK.to_string()
-                    } else if let Some((k, v)) = seg.split_once('=') {
-                        if is_secret_key(k) || looks_like_token(v) {
-                            format!("{k}={MASK}")
-                        } else {
-                            seg.to_string()
-                        }
-                    } else {
-                        seg.to_string()
-                    }
-                })
-                .collect();
+            let segments: Vec<String> = p.split('/').map(scrub).collect();
             format!("/{}", segments.join("/"))
         })
         .unwrap_or_default();
@@ -138,21 +136,97 @@ fn scrub_url(s: &str) -> String {
         let q: Vec<String> = query
             .split('&')
             .map(|pair| match pair.split_once('=') {
-                Some((k, v)) if is_secret_key(k) || looks_like_token(v) => {
+                Some((k, _)) if is_secret_key(k) => {
                     format!("{k}={MASK}")
                 }
-                _ => pair.to_string(),
+                Some((k, v)) => {
+                    format!("{k}={}", scrub(v))
+                }
+                None => scrub(pair),
             })
             .collect();
         out.push('?');
         out.push_str(&q.join("&"));
     }
+    if let Some(frag) = frag_opt {
+        out.push('#');
+        out.push_str(&scrub(frag));
+    }
     out
 }
 
+fn split_key_components(k: &str) -> Vec<String> {
+    let k = k.trim_start_matches('-');
+    let mut components = Vec::new();
+    let mut current = String::new();
+    let chars: Vec<char> = k.chars().collect();
+
+    for i in 0..chars.len() {
+        let c = chars[i];
+        if c == '-' || c == '_' || c == '.' {
+            if !current.is_empty() {
+                components.push(current.to_ascii_lowercase());
+                current = String::new();
+            }
+            continue;
+        }
+
+        // camelCase boundary: lower/digit followed by uppercase (e.g. clientSecret)
+        if !current.is_empty()
+            && c.is_ascii_uppercase()
+            && (chars[i - 1].is_ascii_lowercase() || chars[i - 1].is_ascii_digit())
+        {
+            components.push(current.to_ascii_lowercase());
+            current = String::new();
+        }
+        // camelCase boundary: acronym followed by Capitalized word (e.g. APIKey)
+        else if !current.is_empty()
+            && c.is_ascii_lowercase()
+            && current.len() > 1
+            && chars[i - 1].is_ascii_uppercase()
+        {
+            let prev = current.pop().unwrap();
+            components.push(current.to_ascii_lowercase());
+            current = String::new();
+            current.push(prev);
+        }
+
+        current.push(c);
+    }
+
+    if !current.is_empty() {
+        components.push(current.to_ascii_lowercase());
+    }
+
+    components
+}
+
 fn is_secret_key(k: &str) -> bool {
-    let k = k.trim_start_matches('-').to_ascii_lowercase();
-    SECRET_KEY_WORDS.iter().any(|w| k.contains(w))
+    let k_trimmed = k.trim_start_matches('-');
+    let lower = k_trimmed.to_ascii_lowercase();
+
+    // Check components
+    let components = split_key_components(k);
+    if components
+        .iter()
+        .any(|c| SECRET_KEY_WORDS.contains(&c.as_str()))
+    {
+        return true;
+    }
+
+    // Or the whole key ending in one of them (e.g. clientsecret, authtoken, myapikey)
+    SECRET_KEY_WORDS.iter().any(|&w| {
+        if w == "key" {
+            // Avoid false positives like "monkey", "donkey", "turkey", "hockey"
+            lower.ends_with("key")
+                && !lower.ends_with("monkey")
+                && !lower.ends_with("donkey")
+                && !lower.ends_with("turkey")
+                && !lower.ends_with("hockey")
+        } else {
+            lower.ends_with(w)
+        }
+    })
 }
 
 fn looks_like_token(s: &str) -> bool {
@@ -395,6 +469,32 @@ mod tests {
             ("clientId=Zx9Qw8Er7Ty6Ui5Op4As3Df2", "clientId=***"),
             // --client.id=<token>
             ("--client.id=Zx9Qw8Er7Ty6Ui5Op4As3Df2", "--client.id=***"),
+            // empty key with token value
+            ("=ghp_PLANTEDsecret", "=***"),
+            // URL path-segment assignment with token
+            (
+                "https://example.com/a=b=ghp_PLANTEDsecret",
+                "https://example.com/a=b=***",
+            ),
+            // URL query assignment with token
+            (
+                "https://example.com/?mode=1&clientId=x=ghp_PLANTEDsecret&n=2",
+                "https://example.com/?mode=1&clientId=x=***&n=2",
+            ),
+            // URL fragment tokens
+            (
+                "https://example.com/#ghp_PLANTEDsecret",
+                "https://example.com/#***",
+            ),
+            (
+                "https://example.com/?mode=1#ghp_PLANTEDsecret",
+                "https://example.com/?mode=1#***",
+            ),
+            // secret-key word components vs non-secret substrings
+            ("--monkey=banana", "--monkey=banana"),
+            ("clientSecret=secret123", "clientSecret=***"),
+            ("API_KEY=secret123", "API_KEY=***"),
+            ("x-api-key=secret123", "x-api-key=***"),
             // ordinary flags unchanged
             ("-y", "-y"),
             ("--verbose", "--verbose"),
@@ -422,6 +522,10 @@ mod tests {
         assert_eq!(
             scrub_args(&["--api-key".into(), "x".into()]),
             vec!["--api-key", "***"]
+        );
+        assert_eq!(
+            scrub_args(&["--author".into(), "Jane".into(), "--verbose".into()]),
+            vec!["--author", "Jane", "--verbose"]
         );
     }
 }
