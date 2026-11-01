@@ -1,0 +1,19 @@
+---
+source: tests/claude.rs
+expression: "stable(&f, &out)"
+---
+claude — executable: not found, version: unknown
+paths:
+  user_config            {home}/.claude.json  (file)
+  instructions           {home}/.claude/CLAUDE.md  (symlink -> {source}/AGENTS.md)
+  skill_root             {home}/.claude/skills  (dir)
+checks:
+  config.parse                       supported   [observed] 5 MCP server(s)
+  config.claude_json_location        unknown     [-] where .claude.json lives when CLAUDE_CONFIG_DIR is set is not confirmed
+  instructions.global_file           supported   [documented] CLAUDE.md in config directory
+  instructions.imports               supported   [documented] @path imports supported by Claude; compared as plain text in M0
+  skills.root                        supported   [documented] ~/.claude/skills
+  skills.symlink_discovery           supported   [documented] symlinked skill directories
+  mcp.types                          supported   [documented] stdio, http, sse transports
+  mcp.dollar_brace_expansion         unsupported [documented] no general ${VAR} expansion in .claude.json
+  config.runtime_rewrite             unknown     [-] behavioural probe not run (M2)

@@ -111,7 +111,7 @@ fn stable(f: &Fixture, text: &str) -> String {
 #[test]
 fn status_reports_every_state() {
     let f = codex_fixture();
-    let (out, err, code) = f.run(&["status"]);
+    let (out, err, code) = f.run(&["status", "--agent", "codex"]);
     assert_eq!(err, "");
     assert_eq!(code, 1, "drift must exit 1");
     insta::assert_snapshot!(stable(&f, &out));
@@ -120,7 +120,7 @@ fn status_reports_every_state() {
 #[test]
 fn status_json_is_versioned() {
     let f = codex_fixture();
-    let (out, _, code) = f.run(&["status", "--json"]);
+    let (out, _, code) = f.run(&["status", "--agent", "codex", "--json"]);
     assert_eq!(code, 1);
     let v: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert_eq!(v["schema_version"], 1);
@@ -134,7 +134,7 @@ fn status_json_is_versioned() {
 #[test]
 fn inspect_is_redacted() {
     let f = codex_fixture();
-    let (out, err, code) = f.run(&["inspect"]);
+    let (out, err, code) = f.run(&["inspect", "--agent", "codex"]);
     assert_eq!((err.as_str(), code), ("", 0));
     insta::assert_snapshot!(stable(&f, &out));
 }
@@ -142,7 +142,7 @@ fn inspect_is_redacted() {
 #[test]
 fn probe_text() {
     let f = codex_fixture();
-    let (out, _, code) = f.run(&["probe"]);
+    let (out, _, code) = f.run(&["probe", "--agent", "codex"]);
     assert_eq!(code, 0);
     insta::assert_snapshot!(stable(&f, &out));
 }
@@ -150,7 +150,7 @@ fn probe_text() {
 #[test]
 fn probe_json_contract() {
     let f = codex_fixture();
-    let (out, _, _) = f.run(&["probe", "--json"]);
+    let (out, _, _) = f.run(&["probe", "--agent", "codex", "--json"]);
     let v: serde_json::Value = serde_json::from_str(&out).unwrap();
     let r = &v[0];
     assert_eq!(r["schema_version"], 1);
@@ -177,7 +177,7 @@ fn clean_when_in_sync() {
         &f.home.join(".codex/config.toml"),
         "[mcp_servers.one]\ncommand = \"one\"\n",
     );
-    let (out, _, code) = f.run(&["status"]);
+    let (out, _, code) = f.run(&["status", "--agent", "codex"]);
     assert_eq!(code, 0, "{out}");
 }
 
@@ -187,7 +187,7 @@ fn override_shadows_instructions() {
     write(&f.source.join("AGENTS.md"), "rules\n");
     write(&f.home.join(".codex/AGENTS.md"), "rules\n");
     write(&f.home.join(".codex/AGENTS.override.md"), "other rules\n");
-    let (out, _, code) = f.run(&["status"]);
+    let (out, _, code) = f.run(&["status", "--agent", "codex"]);
     assert_eq!(code, 1);
     assert!(out.contains("shadowed"), "{out}");
 }
@@ -200,7 +200,7 @@ fn managed_block_counts_as_in_sync() {
         &f.home.join(".codex/AGENTS.md"),
         "# my own notes\n<!-- onesrc:start -->\nrules\n<!-- onesrc:end -->\nmore notes\n",
     );
-    let (out, _, code) = f.run(&["status"]);
+    let (out, _, code) = f.run(&["status", "--agent", "codex"]);
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("managed block"), "{out}");
 }
@@ -217,7 +217,7 @@ fn codex_home_env_is_respected() {
         "[mcp_servers.one]\ncommand = \"one\"\n",
     );
     let out = f
-        .cmd(&["status"])
+        .cmd(&["status", "--agent", "codex"])
         .env("CODEX_HOME", f.home.join("alt"))
         .output()
         .unwrap();
@@ -236,7 +236,7 @@ fn tilde_in_source_is_an_error() {
         &f.source.join("onesrc.toml"),
         "[mcp.x]\ncommand = \"node\"\nargs = [\"~/x.js\"]\n",
     );
-    let (_, err, code) = f.run(&["status"]);
+    let (_, err, code) = f.run(&["status", "--agent", "codex"]);
     assert_eq!(code, 2);
     assert!(err.contains("use {home}"), "{err}");
 }
@@ -249,7 +249,7 @@ fn unexpected_shape_refused() {
         &f.home.join(".codex/config.toml"),
         "[mcp_servers.x]\nargs = \"not-an-array\"\n",
     );
-    let (_, err, code) = f.run(&["status"]);
+    let (_, err, code) = f.run(&["status", "--agent", "codex"]);
     assert_eq!(code, 2);
     assert!(err.contains("mcp_servers.x.args"), "{err}");
 }
@@ -273,7 +273,7 @@ fn inspect_rewrites_home_paths() {
             script.to_string_lossy()
         ),
     );
-    let (out, _, _) = f.run(&["inspect"]);
+    let (out, _, _) = f.run(&["inspect", "--agent", "codex"]);
     assert!(
         out.contains(r#"args = ["{home}/tools/x/index.js"]"#),
         "{out}"
